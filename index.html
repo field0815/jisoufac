@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>실장석 공장 — 물류/사육/제작 게임</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="game">
+    <div id="topbar"></div>
+    <div id="screens">
+      <div class="screen" id="screen-park"></div>
+      <div class="screen" id="screen-factory"></div>
+    </div>
+    <!-- 오버레이(우리/연구/통계)는 ui.js가 #game에 동적으로 추가 -->
+  </div>
+
+  <!-- 스크립트 (순서 중요) -->
+  <script src="js/config.js"></script>
+  <script src="js/assets.js"></script>
+  <script src="js/state.js"></script>
+  <script src="js/creatures.js"></script>
+  <script src="js/pens.js"></script>
+  <script src="js/park.js"></script>
+  <script src="js/factory.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
