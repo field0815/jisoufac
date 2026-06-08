@@ -113,6 +113,7 @@ G.CONFIG = {
   CHEAT_MONEY: 999999,
   CHEAT_CREATURES: 10,
   START_MONEY: 10000,
+  START_FOOD: 1000,
 };
 
 /* ---- 방향 정의 (0:상 1:우 2:하 3:좌) ------------------------------------ */
