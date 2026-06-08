@@ -1,5 +1,5 @@
 /* =========================================================================
- * ui.js  —  상단바 / 베이스화면(공원·공장) / 오버레이(상점·연구·통계) / 치트
+ * ui.js  —  상단바 / 베이스화면(공원·공장) / 오버레이(상점·연구·통계) / 옵션
  * ========================================================================= */
 window.G = window.G || {};
 
@@ -10,6 +10,7 @@ G.UI = (function () {
   const OVL = [{ id: 'shop', label: '② 거래' }, { id: 'research', label: '④ 연구' }, { id: 'stats', label: '⑤ 통계' }];
   let lastWhSig = '', lastSoldSig = '', lastPenSig = '';   // 재고/판매/우리 목록 갱신 시그니처
   const PEN_SELL_TYPES = ['사육실장', '새끼사육실장', '독라', '새끼독라'];
+  let optionsEl;
 
   function init() {
     buildTopbar();
@@ -29,7 +30,8 @@ G.UI = (function () {
       <div class="tb-res">🐾 성체 <span id="tb-adult">0</span></div>
       <div class="tb-res">🍼 새끼 <span id="tb-young">0</span></div>
       <div class="tb-tabs" id="tb-tabs"></div>
-      <button class="tb-cheat" id="tb-cheat" title="치트">\`\`\`</button>`;
+      <button class="tb-options" id="tb-options" title="옵션">...</button>
+      <div class="options-menu" id="options-menu"></div>`;
     const tabs = document.getElementById('tb-tabs');
     BASE.forEach(t => {
       const b = document.createElement('button');
@@ -43,7 +45,7 @@ G.UI = (function () {
       b.addEventListener('click', () => toggleOverlay(t.id));
       tabs.appendChild(b);
     });
-    document.getElementById('tb-cheat').addEventListener('click', doCheat);
+    buildOptionsMenu();
   }
 
   function switchScreen(id) {
@@ -70,20 +72,60 @@ G.UI = (function () {
   function bindKeys() {
     window.addEventListener('keydown', (e) => {
       if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
-      if (e.key === '`' || e.code === 'Backquote') { e.preventDefault(); doCheat(); }
-      else if (e.key === 'Escape' && S.overlay) closeOverlay();
+      if (e.key === 'Escape') {
+        if (optionsEl && optionsEl.classList.contains('open')) { closeOptions(); return; }
+        if (S.overlay) closeOverlay();
+      }
     });
   }
 
-  /* ---- 치트 ----------------------------------------------------------- */
-  function doCheat() {
-    S.money += C.CHEAT_MONEY;
-    for (let i = 0; i < C.CHEAT_CREATURES; i++) {
-      const c = G.Creatures.newAdult();
-      G.Factory.dropToFactory(c);
+  /* ---- 옵션 ----------------------------------------------------------- */
+  function buildOptionsMenu() {
+    optionsEl = document.getElementById('options-menu');
+    const btn = document.getElementById('tb-options');
+    optionsEl.innerHTML = `
+      <div class="opt-title">옵션</div>
+      <button data-opt="save">저장</button>
+      <button data-opt="load">불러오기</button>
+      <button data-opt="reset">초기화</button>
+      <div class="opt-save-time" id="opt-save-time"></div>`;
+    btn.addEventListener('click', (e) => { e.stopPropagation(); toggleOptions(); });
+    optionsEl.addEventListener('click', onOptionClick);
+    document.addEventListener('mousedown', (e) => {
+      if (!optionsEl.classList.contains('open')) return;
+      if (!optionsEl.contains(e.target) && e.target !== btn) closeOptions();
+    });
+    renderOptions();
+  }
+  function toggleOptions() {
+    optionsEl.classList.toggle('open');
+    renderOptions();
+  }
+  function closeOptions() { if (optionsEl) optionsEl.classList.remove('open'); }
+  function renderOptions() {
+    if (!optionsEl) return;
+    const t = G.Save && G.Save.savedAt ? G.Save.savedAt() : null;
+    const line = document.getElementById('opt-save-time');
+    if (line) line.textContent = t ? ('최근 저장: ' + formatTime(t)) : '저장 없음';
+  }
+  function formatTime(t) {
+    const d = new Date(t);
+    return d.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+  }
+  function onOptionClick(e) {
+    const b = e.target.closest('button[data-opt]'); if (!b) return;
+    const opt = b.dataset.opt;
+    if (opt === 'save') {
+      G.Save.save(); renderOptions(); flash('저장 완료');
+    } else if (opt === 'load') {
+      if (!G.Save.hasSave()) { flash('불러올 저장 없음'); return; }
+      if (G.Save.load()) flash('불러오기 완료');
+    } else if (opt === 'reset') {
+      if (!confirm('현재 진행 상황을 초기화할까요? 저장된 자동저장도 삭제됩니다.')) return;
+      G.Save.reset(); flash('초기화 완료');
     }
+    closeOptions();
     G.Assets.playSfx('click');
-    flash('치트! 💰+' + C.CHEAT_MONEY.toLocaleString() + ' / 성체 ' + C.CHEAT_CREATURES + '마리');
   }
   let flashEl;
   function flash(msg) {
@@ -376,7 +418,20 @@ G.UI = (function () {
     document.getElementById('tb-seasoning').textContent = Math.floor(S.seasoning);
     document.getElementById('tb-adult').textContent = G.Pens.totalAdults();
     document.getElementById('tb-young').textContent = G.Pens.totalYoung();
+    renderOptions();
   }
 
-  return { init, switchScreen, showCreatureInfo, hideInfo, renderOverlay, renderTop, flash };
+  function afterStateLoad() {
+    lastWhSig = ''; lastSoldSig = ''; lastPenSig = '';
+    closeOptions();
+    const root = document.getElementById('overlay-root');
+    if (root) root.style.display = 'none';
+    document.querySelectorAll('.ovl-panel').forEach(p => p.classList.remove('active'));
+    switchScreen(S.screen || 'factory');
+    buildPriceEditor();
+    renderOverlay();
+    renderTop();
+  }
+
+  return { init, switchScreen, showCreatureInfo, hideInfo, renderOverlay, renderTop, flash, afterStateLoad };
 })();

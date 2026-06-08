@@ -6,10 +6,12 @@ window.G = window.G || {};
 (function () {
   const C = G.CONFIG;
 
-  // 가격 계수 깊은 복사 (런타임에 통계창에서 수정)
-  const prices = JSON.parse(JSON.stringify(G.PRICE_DEFAULTS));
+  function clone(v) { return JSON.parse(JSON.stringify(v)); }
 
-  G.State = {
+  function freshState() {
+    // 가격 계수 깊은 복사 (런타임에 통계창에서 수정)
+    const prices = clone(G.PRICE_DEFAULTS);
+    return {
     money: C.START_MONEY,
 
     // 공원
@@ -54,8 +56,76 @@ window.G = window.G || {};
 
     nextId: 1,
     screen: 'factory',   // 베이스 화면: 'park' | 'factory'
-    overlay: null,       // 오버레이: null | 'pen' | 'research' | 'stats'
-  };
+      overlay: null,       // 오버레이: null | 'shop' | 'research' | 'stats'
+    };
+  }
+
+  function normalizeState(saved) {
+    const base = freshState();
+    if (!saved || typeof saved !== 'object') return base;
+    Object.keys(saved).forEach(k => {
+      if (k in base) base[k] = saved[k];
+    });
+    base.prices = Object.assign(clone(G.PRICE_DEFAULTS), base.prices || {});
+    base.upgrades = Object.assign(freshState().upgrades, base.upgrades || {});
+    base.selection = [];
+    base.overlay = null;
+    return base;
+  }
+
+  function replaceState(next) {
+    const normalized = normalizeState(next);
+    Object.keys(G.State).forEach(k => delete G.State[k]);
+    Object.assign(G.State, normalized);
+  }
+
+  G.createFreshState = freshState;
+  G.resetRuntimeState = function () { replaceState(freshState()); };
+  G.applySavedState = replaceState;
+
+  G.State = freshState();
 
   G.uid = function () { return G.State.nextId++; };
+
+  G.Save = (function () {
+    const KEY = 'siljang_factory_save_v1';
+
+    function payload() {
+      return {
+        version: 1,
+        savedAt: Date.now(),
+        state: clone(G.State),
+      };
+    }
+    function save() {
+      localStorage.setItem(KEY, JSON.stringify(payload()));
+      return true;
+    }
+    function hasSave() { return !!localStorage.getItem(KEY); }
+    function load(silent) {
+      const raw = localStorage.getItem(KEY);
+      if (!raw) return false;
+      const data = JSON.parse(raw);
+      G.applySavedState(data.state || data);
+      if (!silent) {
+        if (G.Factory && G.Factory.reloadState) G.Factory.reloadState();
+        if (G.UI && G.UI.afterStateLoad) G.UI.afterStateLoad();
+      }
+      return true;
+    }
+    function reset() {
+      localStorage.removeItem(KEY);
+      G.resetRuntimeState();
+      if (G.Factory && G.Factory.reloadState) G.Factory.reloadState({ setupStart: true });
+      if (G.UI && G.UI.afterStateLoad) G.UI.afterStateLoad();
+      return true;
+    }
+    function savedAt() {
+      const raw = localStorage.getItem(KEY);
+      if (!raw) return null;
+      try { return JSON.parse(raw).savedAt || null; } catch (e) { return null; }
+    }
+
+    return { save, load, reset, hasSave, savedAt };
+  })();
 })();

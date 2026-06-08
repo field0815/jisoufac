@@ -112,7 +112,7 @@ G.CONFIG = {
   // 치트
   CHEAT_MONEY: 999999,
   CHEAT_CREATURES: 10,
-  START_MONEY: 10000,
+  START_MONEY: 5000,
 };
 
 /* ---- 방향 정의 (0:상 1:우 2:하 3:좌) ------------------------------------ */
@@ -187,7 +187,7 @@ G.DEVICES = {
 
   washbasin:  { cat: 'processing', name: '세면대',   w: 2, h: 1, img: 'washbasin.png',  color: '#3a5a7a', rotatable: true, desc: '점액덩어리 세척→구더기/엄지/자실장(1/3). 구더기는 변환하지 않음. 일꾼 슬롯3.',
                 worker: true, accept: ['점액덩어리'], time: 3 },
-  slaughter:  { cat: 'processing', name: '도축기',   w: 3, h: 3, img: 'slaughter.png',  color: '#a23a3a', rotatable: true, desc: '독라 태그만→실장육. 일꾼 슬롯3.',
+  slaughter:  { cat: 'processing', name: '도축기',   w: 3, h: 3, img: 'slaughter.png',  color: '#a23a3a', rotatable: true, desc: '독라 태그만→실장육. 크기 10마다 실장육 1개. 일꾼 슬롯3.',
                 worker: true, accept: ['독라', '새끼독라'], output: '실장육', time: 3 },
   deshell:    { cat: 'processing', name: '탈복기',   w: 4, h: 2, img: 'deshell.png',    color: '#7a7a3a', rotatable: true, desc: '성체실장/사육실장→독라, 자실장/새끼사육→새끼독라. 일꾼 슬롯3.',
                 worker: true, accept: ['성체실장', '자실장', '사육실장', '새끼사육실장'], convert: { 성체실장: '독라', 자실장: '새끼독라', 사육실장: '독라', 새끼사육실장: '새끼독라' }, time: 4 },

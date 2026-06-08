@@ -4,6 +4,7 @@
 (function () {
   function start() {
     G.Assets.preload();
+    if (G.Save && G.Save.hasSave()) G.Save.load(true);
 
     // 화면 스케일 (창 크기에 맞춰 1440x960 비율 유지)
     fitScale();
@@ -13,6 +14,10 @@
     G.UI.init();
     G.Park.init();
     G.Factory.init();
+
+    setInterval(() => {
+      if (G.Save) G.Save.save();
+    }, 60000);
 
     let last = performance.now();
     function loop(now) {
