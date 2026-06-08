@@ -146,11 +146,11 @@ G.PRODUCTS = {
   실장푸드: { color: '#7a4', img: 'food.png',   isProduct: false, size: 0 }, // 자원(사료)
   운치:     { color: '#964', img: 'unchi.png',  isProduct: false, size: 10 }, // 자원(배설물)
   // 조리실 요리 (실장육보다 비싼 고급 화물, 고정가)
-  꼬치훈제: { color: '#c8862a', img: 'skewer.png',  isProduct: true, flatPrice: 280 },
-  통조림:   { color: '#9aa6b0', img: 'can.png',     isProduct: true, flatPrice: 320 },
-  진공포장: { color: '#7aa0c0', img: 'vacuum.png',  isProduct: true, flatPrice: 300 },
-  실장젓갈: { color: '#b06a6a', img: 'jeotgal.png', isProduct: true, flatPrice: 260 },
-  실장무침: { color: '#c89a4a', img: 'muchim.png',  isProduct: true, flatPrice: 290 },
+  꼬치훈제: { color: '#c8862a', img: 'skewer.png',  isProduct: true, flatPrice: 380 },
+  통조림:   { color: '#9aa6b0', img: 'can.png',     isProduct: true, flatPrice: 420 },
+  진공포장: { color: '#7aa0c0', img: 'vacuum.png',  isProduct: true, flatPrice: 500 },
+  실장젓갈: { color: '#b06a6a', img: 'jeotgal.png', isProduct: true, flatPrice: 360 },
+  실장무침: { color: '#c89a4a', img: 'muchim.png',  isProduct: true, flatPrice: 390 },
 };
 
 /* 등급: 3스탯 중 최고값 기준 */
@@ -167,7 +167,7 @@ G.PRICE_DEFAULTS = {
   // 실장육(도축기 산출): 육질·크기 비례
   실장육:   { base: 10, 육질: 2,  크기: 2 },
   // 사육실장(우리 판매): 개념 비례 + 크기 반비례(작을수록 비쌈). 새끼사육실장도 이 계수 사용.
-  사육실장: { base: 20, 개념: 2,  크기역기준: 60, 크기역: 1 },
+  사육실장: { base: 30, 개념: 5,  크기역기준: 60, 크기역: 1 },
   // 독라(우리 판매): 육질·크기 비례. 새끼독라도 이 계수 사용.
   독라:     { base: 8,  육질: 2,  크기: 1 },
 };
