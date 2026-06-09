@@ -11,6 +11,8 @@ G.UI = (function () {
   let lastWhSig = '', lastSoldSig = '', lastPenSig = '';   // 재고/판매/우리 목록 갱신 시그니처
   const PEN_SELL_TYPES = ['사육실장', '새끼사육실장', '독라', '새끼독라'];
   let optionsEl;
+  let hiddenCheatCount = 0;
+  let hiddenCheatTimer = 0;
 
   function init() {
     buildTopbar();
@@ -72,11 +74,29 @@ G.UI = (function () {
   function bindKeys() {
     window.addEventListener('keydown', (e) => {
       if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
+      if (e.key === '`' || e.code === 'Backquote') {
+        e.preventDefault();
+        const now = performance.now();
+        hiddenCheatCount = (now - hiddenCheatTimer < 900) ? hiddenCheatCount + 1 : 1;
+        hiddenCheatTimer = now;
+        if (hiddenCheatCount >= 3) {
+          hiddenCheatCount = 0;
+          doHiddenCheat();
+        }
+        return;
+      }
       if (e.key === 'Escape') {
         if (optionsEl && optionsEl.classList.contains('open')) { closeOptions(); return; }
         if (S.overlay) closeOverlay();
       }
     });
+  }
+
+  function doHiddenCheat() {
+    S.money += C.CHEAT_MONEY;
+    for (let i = 0; i < C.CHEAT_CREATURES; i++) G.Factory.dropToFactory(G.Creatures.newAdult());
+    G.Assets.playSfx('click');
+    flash('💰+' + C.CHEAT_MONEY.toLocaleString() + ' / 성체 ' + C.CHEAT_CREATURES + '마리');
   }
 
   /* ---- 옵션 ----------------------------------------------------------- */

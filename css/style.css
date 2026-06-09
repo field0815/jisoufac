@@ -38,11 +38,31 @@ html, body {
 }
 .tab-btn:hover { background: #404659; }
 .tab-btn.active { background: #5a7fd0; color: #fff; border-color: #6f93e0; }
-.tb-cheat {
+.tb-options {
   background: #2a2d38; color: #777; border: 1px solid #3a3f50;
   padding: 6px 10px; border-radius: 6px; cursor: pointer; font-family: monospace;
+  min-width: 34px;
 }
-.tb-cheat:hover { color: #ffd964; }
+.tb-options:hover { color: #ffd964; }
+.options-menu {
+  position: absolute; right: 12px; top: 40px; z-index: 1200; display: none;
+  width: 180px; padding: 10px; background: #1b1e26;
+  border: 1px solid #444b5e; border-radius: 8px;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.55);
+}
+.options-menu.open { display: block; }
+.opt-title {
+  color: #e8eef6; font-weight: bold; font-size: 14px;
+  padding: 2px 4px 8px; border-bottom: 1px solid #343a49; margin-bottom: 8px;
+}
+.options-menu button {
+  width: 100%; background: #303545; color: #d9e0ec; border: 1px solid #454b5e;
+  padding: 8px 10px; border-radius: 6px; cursor: pointer; margin-bottom: 6px;
+  text-align: left; font-size: 13px;
+}
+.options-menu button:hover { background: #40516f; color: #fff; }
+.options-menu button[data-opt="reset"]:hover { background: #6a3535; }
+.opt-save-time { color: #95a0b2; font-size: 12px; padding: 4px; }
 
 /* ---- 화면 공통 -------------------------------------------------------- */
 #screens { position: absolute; left: 0; top: 44px; width: 1440px; height: 916px; }
@@ -314,7 +334,7 @@ html, body {
 #fp-statval { width: 52px; background: #11131a; border: 1px solid #444b5e; color: #fff; border-radius: 5px; padding: 3px; font-size: 12px; }
 
 #land-prompt, #device-info {
-  position: absolute; z-index: 460; width: 236px;
+  position: absolute; z-index: 460; width: 276px;
   background: #20242e; border: 1px solid #5a7fd0; border-radius: 8px;
   padding: 9px; box-shadow: 0 4px 14px rgba(0,0,0,0.62); color: #dce6f5;
 }
@@ -335,6 +355,10 @@ html, body {
   color: #9fb4cf; padding: 2px 5px; font-size: 10px;
 }
 .di-state { margin-top: 7px; padding-top: 7px; border-top: 1px solid #394153; font-size: 11px; color: #aee0bd; }
+.di-extra { margin-top: 7px; padding-top: 7px; border-top: 1px solid #394153; display: flex; flex-direction: column; gap: 3px; }
+.di-row { display: flex; justify-content: space-between; gap: 10px; font-size: 11px; line-height: 1.35; }
+.di-row span { color: #94a4b8; flex: 0 0 auto; }
+.di-row b { color: #eaf2ff; font-weight: normal; text-align: right; overflow-wrap: anywhere; }
 
 /* 우리 이름 패널 */
 #pen-panel {

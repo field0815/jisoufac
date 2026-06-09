@@ -49,11 +49,13 @@ G.Factory = (function () {
   let moveMode = false, moving = [];
   // 필터 패널 대상(단일 선택된 분류기/집게)
   let filterTarget = null;
+  let filterPanelSuppressedKey = '';
   let penTarget = null;   // 이름 패널 대상(단일 선택된 우리)
   let birthTarget = null; // 출산대 정보 패널 대상
   let selectedPenCreature = null;
   let landPromptEl = null;
   let deviceInfoEl = null;
+  let deviceInfoAnchor = null;
   const FILTER_TYPES = Array.from(new Set(Object.keys(G.CREATURES).concat(Object.keys(G.PRODUCTS))));
   const FILTER_LABEL = { 사육실장: '사육실장 성체', 새끼사육실장: '사육실장 새끼', 독라: '독라 성체', 새끼독라: '독라 새끼' };
   const SORTER_BUF = 4;   // 분류기 내부 버퍼 용량
@@ -104,6 +106,7 @@ G.Factory = (function () {
     const ns = pp.querySelector('#pen-nosell');
     ns.classList.toggle('on', !!penTarget.noSell);
     ns.textContent = penTarget.noSell ? '판매금지 (해제하려면 클릭)' : '판매금지';
+    repositionDeviceInfo();
   }
 
   /* ---- 출산대 정보 패널 ----------------------------------------------- */
@@ -176,6 +179,7 @@ G.Factory = (function () {
       body.innerHTML = `<div class="muted">성체 실장석을 투입하세요.</div>`;
       bp.querySelector('#bp-remove').style.display = 'none';
     }
+    repositionDeviceInfo();
   }
 
   // 게임 시작: 필드 정중앙 3x3 우리 + 성체 5마리
@@ -273,8 +277,9 @@ G.Factory = (function () {
     const panel = document.getElementById('filter-panel');
     if (!panel) return;
     const one = (S.selection.length === 1) ? S.buildings.find(b => b.id === S.selection[0]) : null;
+    const selKey = S.selection.join('|');
     filterTarget = (one && (one.type === 'sorter' || one.type === 'grabber' || one.type === 'catcher')) ? one : null;
-    if (!filterTarget || S.overlay || S.screen !== 'factory') { panel.style.display = 'none'; return; }
+    if (!filterTarget || S.overlay || S.screen !== 'factory' || filterPanelSuppressedKey === selKey) { panel.style.display = 'none'; return; }
     panel.style.display = 'block';
     panel.querySelector('.fp-title').textContent = (G.DEVICES[filterTarget.type].name) + ' 필터';
     // 위치: 장치 오른쪽. 화면 아래 1/3 지점이면 위쪽으로 펼침(바닥 넘침 방지)
@@ -286,6 +291,9 @@ G.Factory = (function () {
     top = Math.min(top, C.GAME_H - ph - 4);
     panel.style.left = clamp(left, 4, C.GAME_W - 230) + 'px';
     panel.style.top = Math.max(46, top) + 'px';
+    if (deviceInfoEl && deviceInfoEl.style.display !== 'none' && deviceInfoAnchor) {
+      positionMiniPanel(deviceInfoEl, deviceInfoAnchor.x, deviceInfoAnchor.y, avoidInfoPanels(deviceInfoEl));
+    }
     const f = filterTarget.filter || [];
     panel.querySelectorAll('.fp-btn').forEach(btn => btn.classList.toggle('active', f.includes(btn.dataset.type)));
     const sf = filterTarget.statFilter;
@@ -371,6 +379,7 @@ G.Factory = (function () {
       G.UI.flash && G.UI.flash((def ? def.name : type) + ' 연구가 필요합니다.');
       return;
     }
+    closeAuxPanels();
     cancelMove();
     const cat = G.DEVICES[type] && G.DEVICES[type].cat;
     if (cat && cat !== activeCat) { activeCat = cat; renderMenuItems(); highlightCat(); }  // 해당 탭으로 전환
@@ -380,6 +389,7 @@ G.Factory = (function () {
     setStatus(`설치 중: <b>${G.DEVICES[type].name}</b> (R=회전, 우클릭=취소, 좌클릭=설치)`);
   }
   function cancelTool() {
+    closeAuxPanels();
     currentTool = null; beltDragging = false; beltPath = []; wallDragging = false; wallStartPoint = null; wallEndPoint = null;
     document.querySelectorAll('.item-btn').forEach(b => b.classList.remove('active'));
     setStatus('장치 선택 · 빈손: 드래그=영역선택, 클릭=선택, 더블클릭=동종선택, Del=삭제, M=이동');
@@ -426,16 +436,36 @@ G.Factory = (function () {
     const range = def.range ? `<span>범위 ${def.range.w}×${def.range.h}</span>` : '';
     const workers = def.worker ? `<span>일꾼 ${C.WORKER_SLOTS}칸</span>` : '';
     const state = b ? deviceStateLine(b) : '';
+    const details = b ? deviceInfoDetails(b) : deviceTypeDetails(type);
     el.innerHTML = `
       <div class="di-head"><b>${def.name}</b><button class="di-close">×</button></div>
       <div class="di-meta"><span>${def.w}×${def.h}</span>${rot}${range}${workers}</div>
-      <div class="di-desc">${def.desc || ''}</div>${state}`;
+      <div class="di-desc">${def.desc || ''}</div>${state}${details}`;
     el.querySelector('.di-close').onclick = hideDeviceInfo;
     el.style.display = 'block';
-    positionMiniPanel(el, clientX, clientY);
+    deviceInfoAnchor = { x: clientX, y: clientY };
+    positionMiniPanel(el, clientX, clientY, avoidInfoPanels(el));
   }
   function showDeviceInfoForBuilding(b, clientX, clientY) { if (b) showDeviceInfoForType(b.type, clientX, clientY, b); }
-  function hideDeviceInfo() { if (deviceInfoEl) deviceInfoEl.style.display = 'none'; }
+  function hideDeviceInfo() { if (deviceInfoEl) deviceInfoEl.style.display = 'none'; deviceInfoAnchor = null; }
+  function repositionDeviceInfo() {
+    if (deviceInfoEl && deviceInfoEl.style.display !== 'none' && deviceInfoAnchor) {
+      positionMiniPanel(deviceInfoEl, deviceInfoAnchor.x, deviceInfoAnchor.y, avoidInfoPanels(deviceInfoEl));
+    }
+  }
+  function avoidInfoPanels(self) {
+    return ['filter-panel', 'pen-panel', 'birthing-panel', 'land-prompt']
+      .map(id => document.getElementById(id))
+      .filter(el => el && el !== self && el.style.display !== 'none');
+  }
+  function closeAuxPanels() {
+    hideDeviceInfo();
+    if (landPromptEl) landPromptEl.style.display = 'none';
+    const panel = document.getElementById('filter-panel');
+    if (panel) panel.style.display = 'none';
+    filterPanelSuppressedKey = S.selection.join('|');
+  }
+  function allowAuxPanels() { filterPanelSuppressedKey = ''; }
   function deviceStateLine(b) {
     if (b.type === 'penbox') return `<div class="di-state">이름: ${b.name || '우리'} · 수용 ${b.creatures ? b.creatures.length : 0}마리</div>`;
     if (b.type === 'warehouse') return '<div class="di-state">창고 재고는 거래창에서 판매합니다.</div>';
@@ -448,6 +478,127 @@ G.Factory = (function () {
       return `<div class="di-state">필터 ${n ? n + '종 선택됨' : '전체 통과'}</div>`;
     }
     return '';
+  }
+  function infoRows(rows) {
+    return '<div class="di-extra">' + rows.filter(Boolean).map(r => `<div class="di-row"><span>${r[0]}</span><b>${r[1]}</b></div>`).join('') + '</div>';
+  }
+  function itemLabel(data) { return data ? (FILTER_LABEL[data.type] || (G.CREATURES[data.type] && G.CREATURES[data.type].label) || data.type) : '없음'; }
+  function listText(list) { return list && list.length ? list.join(', ') : '없음'; }
+  function progressText(n, total) {
+    if (!total) return '대기';
+    return Math.floor(clamp(n || 0, 0, total) / total * 100) + '%';
+  }
+  function deviceTypeDetails(type) {
+    const def = G.DEVICES[type]; if (!def) return '';
+    if (type === 'belt' || type === 'guardbelt') return infoRows([['기능', '화물 운반'], ['출력', '방향 화살표']]);
+    if (type === 'sorter') return infoRows([['기능', '필터 조건에 따라 2칸 분류'], ['필터 없음', '1번/2번 교대 출력']]);
+    if (type === 'grabber') return infoRows([['기능', '□에서 집어 △에 놓음'], ['필터', '품목/스탯 조건']]);
+    if (type === 'warehouse') return infoRows([['기능', '화물 저장'], ['판매', '거래창에서 판매']]);
+    if (type === 'penbox') return infoRows([['기능', '실장석 사육'], ['수용', `1칸당 성체${C.PEN_ADULT_PER_CELL}/새끼${C.PEN_YOUNG_PER_CELL}`]]);
+    if (type === 'birthing') return infoRows([['필요', '성체 실장석'], ['산출', '점액덩어리']]);
+    if (type === 'washbasin') return infoRows([['필요', '점액덩어리'], ['산출', '구더기/엄지/자실장']]);
+    if (type === 'slaughter') return infoRows([['필요', '독라/새끼독라'], ['산출', '실장육']]);
+    if (type === 'deshell') return infoRows([['필요', '실장석/사육실장 계열'], ['산출', '독라 계열']]);
+    if (type === 'grinder') return infoRows([['필요', '실장석류/실장육'], ['산출', '분쇄육']]);
+    if (type === 'correction') return infoRows([['필요', '자실장/성체실장'], ['산출', '사육실장 계열 또는 실장육']]);
+    if (type === 'mixer') return infoRows([['필요', `분쇄육1 + 운치${C.MIX_UNCHI}`], ['산출', `실장푸드${C.MIX_FOOD}`]]);
+    if (type === 'cookery') return infoRows([['필요', '재료 + 조미료'], ['산출', '요리 생산품']]);
+    if (type === 'tunnel' || type === 'crossbelt') return infoRows([['기능', '입구에서 출구로 순간이동'], ['중간', '건설 가능']]);
+    if (type === 'packer') return infoRows([['기능', '판매 가능 물자 즉시 판매'], ['저장', '하지 않음']]);
+    return infoRows([['기능', def.desc || '']]);
+  }
+  function deviceInfoDetails(b) {
+    const def = G.DEVICES[b.type]; if (!def) return '';
+    if (b.type === 'penbox') return infoRows([
+      ['기능', '실장석 사육/성장'],
+      ['성체', `${G.Pens.countAdult(b)}/${G.Pens.capAdult(b)}`],
+      ['새끼', `${G.Pens.countYoung(b)}/${G.Pens.capYoung(b)}`],
+      ['판매금지', b.noSell ? '켜짐' : '꺼짐'],
+    ]);
+    if (b.type === 'birthing') return infoRows([
+      ['장착', itemLabel(b.worker)],
+      ['만드는 중', b.worker ? '점액덩어리' : '없음'],
+      ['진행', progressText(b.birthTimer, C.BIRTH_INTERVAL)],
+      ['출력 대기', b.output ? itemLabel(b.output) : '없음'],
+    ]);
+    if (b.type === 'washbasin') return infoRows([
+      ['필요', '점액덩어리'],
+      ['투입물', itemLabel(b.item)],
+      ['만드는 중', b.item ? '구더기/엄지/자실장 중 하나' : '없음'],
+      ['진행', progressText(b.washTimer, C.WASH_TIME / workerMult(b))],
+      ['출력 대기', b.output ? itemLabel(b.output) : '없음'],
+    ]);
+    if (b.type === 'slaughter') return infoRows([
+      ['필요', listText(def.accept)],
+      ['투입물', itemLabel(b.item)],
+      ['만드는 중', b.item ? `실장육 ${Math.floor(((b.item.stats && b.item.stats.크기) || 0) / 10)}개` : '없음'],
+      ['진행', progressText(b.timer, def.time / workerMult(b))],
+      ['출력 대기', b.outputs && b.outputs.length ? b.outputs.length + '개' : '없음'],
+    ]);
+    if (b.type === 'deshell') return infoRows([
+      ['필요', listText(def.accept)],
+      ['투입물', itemLabel(b.item)],
+      ['만드는 중', b.item ? (def.convert && def.convert[b.item.type] || '변환') : '없음'],
+      ['진행', progressText(b.timer, def.time / workerMult(b))],
+    ]);
+    if (b.type === 'grinder') return infoRows([
+      ['필요', '실장석류/실장육'],
+      ['투입물', itemLabel(b.item)],
+      ['만드는 중', (b.item || (b.weight || 0) >= C.GRIND_TARGET) ? '분쇄육' : '없음'],
+      ['축적 무게', `${Math.floor(b.weight || 0)}/${C.GRIND_TARGET}`],
+    ]);
+    if (b.type === 'correction') return infoRows([
+      ['필요', listText(def.accept)],
+      ['교사', b.teacher ? '개념 ' + Math.floor((b.teacher.stats && b.teacher.stats.개념) || 0) + '%' : '없음'],
+      ['교육 중', `${b.inmates ? b.inmates.length : 0}/${def.hold}`],
+      ['산출', '사육실장 계열 / 실장육'],
+    ]);
+    if (b.type === 'mixer') return infoRows([
+      ['필요', `분쇄육1 + 운치${C.MIX_UNCHI}`],
+      ['분쇄육', b.slotMeat ? '있음' : '없음'],
+      ['운치', `${b.unchiN || 0}/${C.MIX_UNCHI}`],
+      ['만드는 중', (b.slotMeat && (b.unchiN || 0) >= C.MIX_UNCHI) ? `실장푸드${C.MIX_FOOD}` : '없음'],
+      ['출력 대기', b.outputFood ? '실장푸드' : '없음'],
+    ]);
+    if (b.type === 'cookery') return infoRows([
+      ['필요', '재료 + 조미료1'],
+      ['만드는 중', b.cooking ? (def.cook[b.cooking].out) : '없음'],
+      ['재료', b.mats ? Object.keys(b.mats).filter(k => b.mats[k]).map(k => k + ' ' + b.mats[k]).join(', ') || '없음' : '없음'],
+      ['조미료', Math.floor(S.seasoning)],
+    ]);
+    if (b.type === 'sorter') return infoRows([
+      ['기능', '화물을 2개 레인으로 분류'],
+      ['필터', b.filter && b.filter.length ? b.filter.length + '종' : '전체 통과'],
+      ['필터 레인', (b.filterLane || 1) + '번'],
+      ['버퍼', b.buffer && b.buffer.length ? b.buffer.length + '개' : '없음'],
+    ]);
+    if (b.type === 'grabber') return infoRows([
+      ['기능', '□에서 집어 △에 놓음'],
+      ['들고 있음', itemLabel(b.holding)],
+      ['필터', b.filter && b.filter.length ? b.filter.length + '종' : '전체 통과'],
+    ]);
+    if (b.type === 'warehouse') return infoRows([
+      ['기능', '화물 저장'],
+      ['재고 종류', Object.keys(S.warehouse).filter(k => S.warehouse[k] && S.warehouse[k].length).length + '종'],
+      ['판매', '거래창'],
+    ]);
+    if (b.type === 'tunnel' || b.type === 'crossbelt') return infoRows([
+      ['기능', '화물 순간이동'],
+      ['대기열', b.queue && b.queue.length ? b.queue.length + '개' : '없음'],
+      ['출구', '점선 표시 위치'],
+    ]);
+    if (b.type === 'catcher') return infoRows([
+      ['기능', '범위 안 배회 실장석 수거'],
+      ['필터', b.filter && b.filter.length ? b.filter.length + '종' : '전체 통과'],
+      ['출력', '앞쪽 출구'],
+    ]);
+    if (b.type === 'skewer') return infoRows([
+      ['기능', '실장석 고정 후 1분 뒤 파괴'],
+      ['장착', itemLabel(b.held)],
+      ['남은 시간', b.held ? Math.max(0, Math.ceil(60 - (b.heldT || 0))) + '초' : '없음'],
+    ]);
+    if (b.type === 'packer') return infoRows([['기능', '판매 가능 물자 즉시 판매'], ['현재', '대기']]);
+    return deviceTypeDetails(b.type);
   }
 
   /* ---- 좌표 ------------------------------------------------------------ */
@@ -477,7 +628,18 @@ G.Factory = (function () {
   // 월드 픽셀 → #game(오버레이) px. 캔버스는 #game (0,44)에 1:1 표시.
   function worldToGameX(wpx) { return (wpx - cam.x) * cam.zoom; }
   function worldToGameY(wpy) { return 44 + (wpy - cam.y) * cam.zoom; }
-  function positionMiniPanel(el, clientX, clientY) {
+  function panelBox(el) {
+    if (!el || el.style.display === 'none') return null;
+    const w = el.offsetWidth || 0, h = el.offsetHeight || 0;
+    const x = parseFloat(el.style.left) || 0, y = parseFloat(el.style.top) || 0;
+    return { x, y, w, h, r: x + w, b: y + h };
+  }
+  function overlaps(a, b, gap) {
+    if (!a || !b) return false;
+    const g = gap || 0;
+    return !(a.r + g <= b.x || a.x >= b.r + g || a.b + g <= b.y || a.y >= b.b + g);
+  }
+  function positionMiniPanel(el, clientX, clientY, avoidEl) {
     const g = document.getElementById('game').getBoundingClientRect();
     const sc = g.width / C.GAME_W;
     const w = el.offsetWidth || 220, h = el.offsetHeight || 120;
@@ -485,6 +647,29 @@ G.Factory = (function () {
     let y = (clientY - g.top) / sc + 12;
     x = clamp(x, 8, C.GAME_W - w - 8);
     y = clamp(y, 48, C.GAME_H - h - 8);
+    const avoids = (Array.isArray(avoidEl) ? avoidEl : [avoidEl]).map(panelBox).filter(Boolean);
+    if (avoids.length) {
+      const candidates = [
+        { x, y },
+        ...avoids.flatMap(avoid => [
+          { x: avoid.x - w - 10, y },
+          { x: avoid.r + 10, y },
+          { x, y: avoid.b + 10 },
+          { x, y: avoid.y - h - 10 },
+          { x: avoid.x - w - 10, y: avoid.y },
+          { x: avoid.r + 10, y: avoid.y },
+        ]),
+        { x: 8, y: 52 },
+        { x: C.GAME_W - w - 8, y: 52 },
+        { x: 8, y: C.GAME_H - h - 8 },
+        { x: C.GAME_W - w - 8, y: C.GAME_H - h - 8 },
+      ].map(p => ({
+        x: clamp(p.x, 8, C.GAME_W - w - 8),
+        y: clamp(p.y, 48, C.GAME_H - h - 8),
+      }));
+      const found = candidates.find(p => avoids.every(avoid => !overlaps({ x: p.x, y: p.y, w, h, r: p.x + w, b: p.y + h }, avoid, 8)));
+      if (found) { x = found.x; y = found.y; }
+    }
     el.style.left = x + 'px';
     el.style.top = y + 'px';
   }
@@ -723,6 +908,7 @@ G.Factory = (function () {
     return builds.map(b => ({ type: b.type, dc: b.col - minC, dr: b.row - minR, dir: b.dir, w: b.w, h: b.h }));
   }
   function copySelection() {
+    closeAuxPanels();
     const builds = S.selection.map(id => S.buildings.find(b => b.id === id)).filter(Boolean);
     if (!builds.length) { setStatus('복사할 건물을 먼저 드래그 선택하세요.'); return; }
     pasteClip = clipFromBuildings(builds);
@@ -730,6 +916,7 @@ G.Factory = (function () {
     setStatus('복사됨 (' + pasteClip.length + '개) · 클릭=붙여넣기 / Ctrl+숫자=청사진 저장 / 우클릭=취소');
   }
   function pasteAt(col, row) {
+    closeAuxPanels();
     snapshot();
     for (const it of pasteClip) {
       const c = col + it.dc, r = row + it.dr;
@@ -747,6 +934,7 @@ G.Factory = (function () {
   }
   function loadBlueprint(k) {
     if (!blueprints[k]) return;
+    closeAuxPanels();
     pasteClip = blueprints[k].map(it => Object.assign({}, it));
     pasteMode = true; currentTool = null; cancelMove(); S.selection = [];
     setStatus('청사진 ' + k + ' 불러옴 · 클릭=붙여넣기 / 우클릭=취소');
@@ -879,6 +1067,7 @@ G.Factory = (function () {
     if (removed) G.Assets.playSfx('remove');
   }
   function deleteSelection() {
+    closeAuxPanels();
     if (wallSelection.length) {
       refund(wallSelection.length * (G.BUILD_COST.wall || 0));
       wallSelection.forEach(k => { delete S.walls[k]; });
@@ -896,6 +1085,7 @@ G.Factory = (function () {
   /* ---- 이동 ----------------------------------------------------------- */
   function enterMove() {
     if (!S.selection.length || currentTool) return;
+    closeAuxPanels();
     const builds = S.selection.map(id => S.buildings.find(b => b.id === id)).filter(Boolean);
     if (!builds.length) return;
     snapshot();   // 이동 전 상태 기록(Undo)
@@ -909,6 +1099,7 @@ G.Factory = (function () {
     setStatus('이동 중: 좌클릭=배치 / R=회전 / Esc·우클릭=취소');
   }
   function tryDropMove() {
+    closeAuxPanels();
     if (!mouseCell) return;
     const targets = moving.map(m => ({ m, col: mouseCell.col + m.offC, row: mouseCell.row + m.offR }));
     const ok = targets.every(t => canPlaceMoved(t.m.b, t.col, t.row));
@@ -925,12 +1116,14 @@ G.Factory = (function () {
     return true;
   }
   function cancelMove() {
+    closeAuxPanels();
     if (!moveMode) return;
     moving.forEach(m => { m.b.col = m.oc; m.b.row = m.or; m.b.dir = m.od; attach(m.b); });
     moveMode = false; moving = [];
   }
   // 호버 중인 건물 제자리 회전
   function rotateBuilding(b) {
+    closeAuxPanels();
     if (!b || !G.DEVICES[b.type] || !G.DEVICES[b.type].rotatable) return;
     const od = b.dir, ow = b.w, oh = b.h;
     detach(b);
@@ -951,29 +1144,42 @@ G.Factory = (function () {
       const g = grabberRoles(b);
       if ([g.pickup, g.mid, g.drop].some(c => c.c === cell.col && c.r === cell.row)) return b;
     }
+    for (const b of S.buildings) {
+      if (b.type === 'skewer' && cell.col === b.col && cell.row >= b.row - 1 && cell.row <= b.row) return b;
+    }
     return null;
   }
   function selectAt(cell, clientX, clientY) {
-    if (!cell) { S.selection = []; wallSelection = []; return; }
+    allowAuxPanels();
+    if (!cell) { S.selection = []; wallSelection = []; closeAuxPanels(); return; }
     const b = buildingAtCell(cell);
     S.selection = b ? [b.id] : [];
     wallSelection = [];
     if (b) selectedPenCreature = null;
-    if (b && clientX != null && clientY != null) showDeviceInfoForBuilding(b, clientX, clientY);
+    if (b && clientX != null && clientY != null) {
+      updateFilterPanel();
+      showDeviceInfoForBuilding(b, clientX, clientY);
+    } else closeAuxPanels();
   }
   function selectInRect(a, b) {
+    allowAuxPanels();
+    closeAuxPanels();
     const minC = Math.min(a.col, b.col), maxC = Math.max(a.col, b.col);
     const minR = Math.min(a.row, b.row), maxR = Math.max(a.row, b.row);
     S.selection = S.buildings.filter(bd =>
       footprintCellsOf(bd).some(c => c.c >= minC && c.c <= maxC && c.r >= minR && c.r <= maxR)
     ).map(bd => bd.id);
     wallSelection = wallsInRect(a, b);
+    filterPanelSuppressedKey = S.selection.join('|');
   }
   function selectSameType(cell) {
+    allowAuxPanels();
+    closeAuxPanels();
     const b = buildingAtCell(cell);
     wallSelection = [];
-    if (!b) { S.selection = []; return; }
+    if (!b) { S.selection = []; filterPanelSuppressedKey = ''; return; }
     S.selection = S.buildings.filter(x => x.type === b.type).map(x => x.id);
+    filterPanelSuppressedKey = S.selection.join('|');
   }
 
   /* ---- 투입 (드래그/집게 공용) --------------------------------------- */
@@ -1756,17 +1962,21 @@ G.Factory = (function () {
       const lk = k.toLowerCase();
       if (['w', 'a', 's', 'd'].includes(lk)) {
         e.preventDefault();
+        closeAuxPanels();
         moveKeys[lk] = true;
         return;
       }
       if (k === 'r' || k === 'R') {
+        closeAuxPanels();
         if (currentTool && G.DEVICES[currentTool].rotatable) { ghostDir = (ghostDir + 1) % 4; G.Assets.playSfx('rotate'); }
         else if (moveMode) { moving.forEach(m => { if (G.DEVICES[m.b.type].rotatable) { m.b.dir = (m.b.dir + 1) % 4; const fp = footprint(m.b.type, m.b.col, m.b.row, m.b.dir); m.b.w = fp.w; m.b.h = fp.h; } }); G.Assets.playSfx('rotate'); }
         else if (hoverBuilding) rotateBuilding(hoverBuilding);  // 호버 중 R로 회전
       } else if (k === 'Escape') {
+        closeAuxPanels();
         if (pasteMode) { pasteMode = false; } else if (currentTool) cancelTool(); else if (moveMode) cancelMove(); else { S.selection = []; wallSelection = []; }
       } else if (k === 'Delete' || k === 'Backspace') {
         e.preventDefault();
+        closeAuxPanels();
         if (selectedPenCreature) {
           const sold = sellPenCreatureRef(selectedPenCreature);
           selectedPenCreature = null;
@@ -1774,11 +1984,11 @@ G.Factory = (function () {
         } else if (S.selection.length || wallSelection.length) { snapshot(); deleteSelection(); }
         else if (mouseCell) { snapshot(); deleteFloorAt(mouseCell); }   // 바닥 화물/배회 제거
       } else if (k === 'm' || k === 'M') {
-        e.preventDefault(); enterMove();
+        e.preventDefault(); closeAuxPanels(); enterMove();
       } else if (k === 'e' || k === 'E') {
-        e.preventDefault(); activeCat = 'logistics'; renderMenuItems(); highlightCat(); selectTool('belt');
+        e.preventDefault(); closeAuxPanels(); activeCat = 'logistics'; renderMenuItems(); highlightCat(); selectTool('belt');
       } else if (k === 'q' || k === 'Q') {
-        e.preventDefault(); selectTool('wall'); setStatus('벽 모드: 모서리 점에서 시작해 수평/수직으로 드래그 설치. 드래그 선택 후 Del=벽 삭제.');
+        e.preventDefault(); closeAuxPanels(); selectTool('wall'); setStatus('벽 모드: 모서리 점에서 시작해 수평/수직으로 드래그 설치. 드래그 선택 후 Del=벽 삭제.');
       } else if (/^[0-9]$/.test(k)) {
         e.preventDefault();
         if (hoveredMenuType) assignHotkey(k, hoveredMenuType);   // 메뉴에 올린 채 숫자 = 지정
@@ -1898,21 +2108,22 @@ G.Factory = (function () {
     canvas.addEventListener('mouseleave', () => { mouseCell = null; hoverBuilding = null; });
 
     // 휠 스크롤=확대/축소, 휠(중간)버튼 드래그=화면 이동
-    canvas.addEventListener('wheel', (e) => { e.preventDefault(); zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.12 : 1 / 1.12); }, { passive: false });
+    canvas.addEventListener('wheel', (e) => { e.preventDefault(); closeAuxPanels(); zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.12 : 1 / 1.12); }, { passive: false });
     canvas.addEventListener('mousedown', (e) => {
-      if (e.button === 1) { e.preventDefault(); panning = true; panStart = { x: e.clientX, y: e.clientY, camx: cam.x, camy: cam.y }; return; }
+      if (e.button === 1) { e.preventDefault(); closeAuxPanels(); panning = true; panStart = { x: e.clientX, y: e.clientY, camx: cam.x, camy: cam.y }; return; }
       if (e.button !== 0) return;
       const cell = screenToCell(e.clientX, e.clientY);
       if (!cell) return;
       if (pasteMode) { pasteAt(cell.col, cell.row); return; }   // 붙여넣기
       if (moveMode) { tryDropMove(); return; }
-      if (currentTool && !isOwnedCell(cell.col, cell.row)) { showLandPrompt(cell, e.clientX, e.clientY); return; }
-      if (currentTool === 'wall') { snapshot(); wallDragging = true; wallStartPoint = wallPointAt(mouseGX, mouseGY); wallEndPoint = wallStartPoint; return; }
-      if (currentTool === 'belt' || currentTool === 'guardbelt') { snapshot(); beltDragging = true; beltPath = [{ col: cell.col, row: cell.row }]; }
-      else if (currentTool === 'penbox') { snapshot(); penDragStart = cell; }
-      else if (currentTool === 'crossbelt') { snapshot(); const o = ghostOrigin('crossbelt', cell, ghostDir); if (placeDevice('crossbelt', o.col, o.row, ghostDir)) G.Assets.playSfx('place'); }
-      else if (currentTool) { snapshot(); const o = ghostOrigin(currentTool, cell, ghostDir); if (placeDevice(currentTool, o.col, o.row, ghostDir)) G.Assets.playSfx('place'); }
+      if (currentTool && !isOwnedCell(cell.col, cell.row)) { closeAuxPanels(); showLandPrompt(cell, e.clientX, e.clientY); return; }
+      if (currentTool === 'wall') { closeAuxPanels(); snapshot(); wallDragging = true; wallStartPoint = wallPointAt(mouseGX, mouseGY); wallEndPoint = wallStartPoint; return; }
+      if (currentTool === 'belt' || currentTool === 'guardbelt') { closeAuxPanels(); snapshot(); beltDragging = true; beltPath = [{ col: cell.col, row: cell.row }]; }
+      else if (currentTool === 'penbox') { closeAuxPanels(); snapshot(); penDragStart = cell; }
+      else if (currentTool === 'crossbelt') { closeAuxPanels(); snapshot(); const o = ghostOrigin('crossbelt', cell, ghostDir); if (placeDevice('crossbelt', o.col, o.row, ghostDir)) G.Assets.playSfx('place'); }
+      else if (currentTool) { closeAuxPanels(); snapshot(); const o = ghostOrigin(currentTool, cell, ghostDir); if (placeDevice(currentTool, o.col, o.row, ghostDir)) G.Assets.playSfx('place'); }
       else {
+        closeAuxPanels();
         const hit = creatureAtClient(e.clientX, e.clientY);  // 벨트 위/배회 생물 집기·정보
         if (hit) { startCreatureDrag(hit, e); return; }
         pendingSelect = true; selDragging = false; selStartCell = cell; selDownClient = { x: e.clientX, y: e.clientY };
@@ -1956,6 +2167,7 @@ G.Factory = (function () {
 
     canvas.addEventListener('contextmenu', (e) => {
       e.preventDefault();
+      closeAuxPanels();
       if (pasteMode) { pasteMode = false; setStatus('붙여넣기 취소.'); return; }
       if (currentTool) { cancelTool(); return; }
       if (moveMode) { cancelMove(); return; }
@@ -2209,7 +2421,7 @@ G.Factory = (function () {
       const x = cell.c * CELL, y = cell.r * CELL;
       ctx.fillStyle = def.color;
       ctx.fillRect(x + 4, y + 4, CELL - 8, CELL - 8);
-      ctx.strokeStyle = i === 0 ? '#5cf' : '#fc5';
+      ctx.strokeStyle = i === 0 ? 'rgba(255,255,255,0.25)' : '#fc5';
       ctx.lineWidth = 3;
       ctx.strokeRect(x + 5, y + 5, CELL - 10, CELL - 10);
       ctx.fillStyle = 'rgba(0,0,0,0.55)';
@@ -2232,11 +2444,19 @@ G.Factory = (function () {
     if (b.type === 'tunnel' || b.type === 'crossbelt') { drawTransport(b); return; }
     const x = b.col * CELL, y = b.row * CELL, w = b.w * CELL, h = b.h * CELL;
     const def = G.DEVICES[b.type];
+    const frameIdx = (def && def.cat === 'processing' && !isDeviceAnimating(b)) ? 0 : null;
     // 우리(penbox)는 9분할 울타리(아래 drawPen). 출산대는 장착 여부에 따라 birthing_ready/birthing.
     let drawn = false;
     if (b.type === 'penbox') drawn = true;
     else if (b.type === 'birthing') drawn = G.Assets.drawDeviceSpriteNamed(ctx, b.worker ? 'birthing.png' : 'birthing_ready.png', x + 1, y + 1, w - 2, h - 2);
-    else drawn = G.Assets.drawDeviceSprite(ctx, b.type, x + 1, y + 1, w - 2, h - 2);
+    else if (b.type === 'correction') {
+      drawn = b.teacher
+        ? G.Assets.drawDeviceSpriteNamed(ctx, 'correction_teacher.png', x + 1, y + 1, w - 2, h - 2, frameIdx)
+        : G.Assets.drawDeviceSprite(ctx, b.type, x + 1, y + 1, w - 2, h - 2, frameIdx);
+    }
+    else if (b.type === 'pointer') drawn = drawRotatedDeviceSprite(b, x, y, w, h);
+    else if (b.type === 'skewer') drawn = drawSkewerDevice(b, x, y);
+    else drawn = G.Assets.drawDeviceSprite(ctx, b.type, x + 1, y + 1, w - 2, h - 2, frameIdx);
     if (!drawn) {
       ctx.fillStyle = def.color; ctx.fillRect(x + 1, y + 1, w - 2, h - 2);
       ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.font = Math.max(9, Math.floor((h - 2) * 0.18)) + 'px sans-serif';
@@ -2245,7 +2465,7 @@ G.Factory = (function () {
     if (dropHoverId === b.id) { ctx.strokeStyle = '#7fe'; ctx.lineWidth = 3; ctx.strokeRect(x + 2, y + 2, w - 4, h - 4); }
 
     if (b.type === 'washbasin') {
-      markCell(washInputCell(b), '입', '#5cf'); markEdge(outputCell(b), '출', '#fc5');
+      markEdge(outputCell(b), '출', '#fc5');
       drawProgressBar(x, y + h - 6, w, b.washTimer / (C.WASH_TIME / workerMult(b)), b.state); drawWorkerSlots(b, x, y, w);
     } else if (b.type === 'birthing') {
       markEdge(outputCell(b), '출', '#fc5');
@@ -2260,20 +2480,19 @@ G.Factory = (function () {
       markEdge(sideCell(b, b.dir), '사육출', '#9f9'); markEdge(sideCell(b, (b.dir + 2) % 4), '육출', '#f99');
       drawCorrection(b, x, y, w, h);
     } else if (b.type === 'grinder') {
-      markFootprint(b, '입', '#5cf'); markEdge(outputCell(b), '출', '#fc5');
+      markEdge(outputCell(b), '출', '#fc5');
       drawProgressBar(x, y + h - 6, w, (b.weight || 0) / C.GRIND_TARGET, 'life');
       drawItem(b, x, y);
       ctx.fillStyle = '#dfd'; ctx.font = '10px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
       ctx.fillText('무게 ' + Math.floor(b.weight || 0), x + w / 2, y + h - 14);
     } else if (b.type === 'mixer') {
-      markFootprint(b, '입(분쇄육+운치×' + C.MIX_UNCHI + ')', '#5cf');
       drawProgressBar(x, y + h - 6, w, (b.slotMeat && (b.unchiN || 0) >= C.MIX_UNCHI) ? b.timer / (def.time / workerMult(b)) : 0, b.state);
       ctx.fillStyle = 'rgba(255,255,255,0.9)'; ctx.font = '10px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
       ctx.fillText('분쇄육 ' + (b.slotMeat ? '✓' : '·'), x + w / 2, y + h / 2 + 2);
       ctx.fillText('운치 ' + (b.unchiN || 0) + '/' + C.MIX_UNCHI, x + w / 2, y + h / 2 + 16);
       drawWorkerSlots(b, x, y, w);
     } else if (b.type === 'cookery') {
-      markFootprint(b, '입(재료+조미료)', '#5cf'); markEdge(outputCell(b), '출', '#fc5');
+      markEdge(outputCell(b), '출', '#fc5');
       drawProgressBar(x, y + h - 6, w, b.cooking ? b.timer / (def.time / workerMult(b)) : 0, b.state);
       ctx.fillStyle = 'rgba(255,255,255,0.92)'; ctx.font = '9px sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
       const cook = def.cook; let li = 0;
@@ -2303,19 +2522,68 @@ G.Factory = (function () {
       if (n) { ctx.fillStyle = '#ffd964'; ctx.font = '10px sans-serif'; ctx.textAlign = 'right'; ctx.textBaseline = 'bottom'; ctx.fillText('●' + n, x + w - 3, y + h - 3); }
     } else if (b.type === 'tunnel') {
       const e = tunnelEnds(b);
-      markCell({ c: e.back.c, r: e.back.r }, '입', '#5cf'); markEdge(e.exit, '출', '#fc5');
+      markEdge(e.exit, '출', '#fc5');
       const n = b.queue ? b.queue.length : 0;
       if (n) { ctx.fillStyle = '#ffd964'; ctx.font = '12px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('●' + n, (b.col + b.w / 2) * CELL, (b.row + b.h / 2) * CELL); }
     } else if (def.special) {
       if (S.selection.includes(b.id)) drawRangeOverlay(rangeRect(b.type, b.col, b.row, b.dir), '#ffd24a', 0.10); // 선택 시 영향 범위
       if (def.special === 'catch') markEdge(outputCell(b), '출', '#fc5');
-      if (def.special === 'skewer' && b.held) {
+      if (def.special === 'skewer') {
+        drawSkewerDevice(b, x, y);
+      }
+      if (def.special === 'skewer' && b.held && !skewerLoadedSpriteExists()) {
         const cd = G.CREATURES[b.held.type];
         if (!G.Assets.drawCreatureNative(ctx, b.held.type, x + w / 2, y + h / 2, 0)) { ctx.fillStyle = cd ? cd.color : '#fff'; ctx.beginPath(); ctx.arc(x + w / 2, y + h / 2, 8, 0, Math.PI * 2); ctx.fill(); }
         ctx.fillStyle = '#fff'; ctx.font = 'bold 14px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('✚', x + w / 2, y + 4);
       }
     }
     if (b.speechT > 0 && b.speech) drawBubble(x + w / 2, y - 2, b.speech);
+  }
+  function isDeviceAnimating(b) {
+    if (b.state === 'producing') return true;
+    if (b.type === 'washbasin') return !!b.item;
+    if (b.type === 'grinder') return !!b.item;
+    if (b.type === 'mixer') return !!(b.slotMeat && (b.unchiN || 0) >= C.MIX_UNCHI);
+    if (b.type === 'cookery') return !!b.cooking;
+    if (b.type === 'correction') return !!(b.inmates && b.inmates.length);
+    if (b.type === 'slaughter' || b.type === 'deshell') return !!b.item;
+    return false;
+  }
+  function drawRotatedDeviceSprite(b, x, y, w, h) {
+    ctx.save();
+    ctx.translate(x + w / 2, y + h / 2);
+    ctx.rotate((b.dir - 1) * Math.PI / 2); // 기본 스프라이트 방향: →
+    const ok = G.Assets.drawDeviceSprite(ctx, b.type, -w / 2 + 1, -h / 2 + 1, w - 2, h - 2);
+    ctx.restore();
+    return ok;
+  }
+  function skewerLoadedSpriteExists() {
+    const rec = G.Assets.loadImage('assets/images/devices/skewer_dev_loaded.png');
+    return !!(rec && rec.ok);
+  }
+  function drawSkewerDevice(b, x, y) {
+    const fileName = b.held ? 'skewer_dev_loaded.png' : 'skewer_dev.png';
+    const dw = 48, dh = 96;
+    const dx = x, dy = y + CELL - dh;
+    const ok = G.Assets.drawDeviceSpriteNamed(ctx, fileName, dx, dy, dw, dh);
+    if (!ok && b.held) return G.Assets.drawDeviceSpriteNamed(ctx, 'skewer_dev.png', dx, dy, dw, dh);
+    if (ok) return true;
+    ctx.save();
+    ctx.fillStyle = G.DEVICES.skewer.color;
+    ctx.fillRect(dx + 2, dy + 8, dw - 4, dh - 16);
+    ctx.strokeStyle = '#ffd9a0';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(dx + 8, dy + dh / 2);
+    ctx.lineTo(dx + dw - 8, dy + dh / 2);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.font = 'bold 11px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(b.held ? '장착' : '꼬챙이', x + CELL / 2, y + CELL / 2);
+    ctx.restore();
+    return true;
   }
   function drawRangeOverlay(r, color, alpha) {
     if (!r) return;
@@ -2421,7 +2689,7 @@ G.Factory = (function () {
     const list = b.inmates || []; const cols = 3;
     for (let i = 0; i < list.length; i++) {
       const m = list[i]; const gc = i % cols, gr = Math.floor(i / cols);
-      const cx = x + (gc + 0.5) * (w / cols), cy = y + 20 + gr * 22 + 8;
+      const cx = x + (gc + 0.5) * (w / cols), cy = y + 20 + gr * 22 + 8 + 48;
       if (!G.Assets.drawCreatureNative(ctx, m.type, cx, cy, 3)) { const d = G.CREATURES[m.type]; ctx.fillStyle = d ? d.color : '#fff'; ctx.beginPath(); ctx.arc(cx, cy, 7, 0, Math.PI * 2); ctx.fill(); }
       ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(cx - 15, cy + 7, 30, 9);
       ctx.fillStyle = '#fff'; ctx.font = '7px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
@@ -2470,8 +2738,7 @@ G.Factory = (function () {
         ctx.fillText(i === 0 ? '□' : (i === 1 ? '·' : '△'), x + CELL / 2, y + CELL / 2); ctx.restore();
       });
     }
-    // 입/출 위치 표시
-    inoutBadge(roles.pickup, '입', '#5cf');
+    // 출 위치 표시
     inoutBadge(roles.drop, '출', '#fc5');
     if (b.holding) {
       const isCre = G.CREATURES[b.holding.type];
@@ -2632,6 +2899,10 @@ G.Factory = (function () {
       ctx.fillRect(x + 2, y + 2, CELL - 4, CELL - 4);
       drawArrow(x + CELL / 2, y + CELL / 2, seg.dir, ok ? '#cff' : '#fcc');
     }
+    if (beltPath.length) {
+      const last = pathWithDirs().slice(-1)[0];
+      if (last) drawGhostOutputs(beltType, last.col, last.row, last.dir);
+    }
   }
   function drawSingleGhost(type, col, row, dir) {
     const fp = footprint(type, col, row, dir);
@@ -2643,13 +2914,53 @@ G.Factory = (function () {
       ctx.fillRect(x + 2, y + 2, CELL - 4, CELL - 4);
     }
     if (G.DEVICES[type].range) drawRangeOverlay(rangeRect(type, col, row, dir), '#ffd24a', 0.18); // 영향 범위 미리보기
+    if (type === 'skewer') {
+      ctx.save();
+      ctx.globalAlpha = 0.62;
+      drawSkewerDevice({ type: 'skewer', held: null }, col * CELL, row * CELL);
+      ctx.restore();
+    }
     if (type === 'grabber') {
       const roles = grabberRoles({ col, row, dir });
       gLabel(roles.pickup, '입□'); gLabel(roles.mid, '·'); gLabel(roles.drop, '출△');
     } else if (G.DEVICES[type].rotatable) {
       drawArrow((col + fp.w / 2) * CELL, (row + fp.h / 2) * CELL, dir, ok ? '#cff' : '#fcc');
     }
+    drawGhostOutputs(type, col, row, dir);
     function gLabel(cell, t) { ctx.fillStyle = '#fff'; ctx.font = 'bold 16px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(t, cell.c * CELL + CELL / 2, cell.r * CELL + CELL / 2); }
+  }
+  function drawGhostOutputs(type, col, row, dir) {
+    const def = G.DEVICES[type]; if (!def) return;
+    const fp = footprint(type, col, row, dir);
+    const b = { type, col, row, dir, w: fp.w, h: fp.h };
+    if (type === 'penbox' || type === 'warehouse' || type === 'wall' || type === 'packer') return;
+    if (type === 'tunnel' || type === 'crossbelt') { drawGhostOutputCell(transportEnds(b).exit, '출'); return; }
+    if (type === 'grabber') { drawGhostOutputCell(grabberRoles(b).drop, '출'); return; }
+    if (type === 'sorter') { laneInfo(b).forEach(ln => drawGhostOutputCell(ln.out, '출')); return; }
+    if (type === 'correction') {
+      drawGhostOutputCell(sideCell(b, dir), '사육출');
+      drawGhostOutputCell(sideCell(b, (dir + 2) % 4), '육출');
+      return;
+    }
+    if (type === 'speaker' || type === 'pointer' || type === 'skewer' || type === 'feeder') return;
+    drawGhostOutputCell(outputCell(b), '출');
+  }
+  function drawGhostOutputCell(cell, label) {
+    ctx.save();
+    ctx.setLineDash([6, 4]);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#ffd24a';
+    ctx.fillStyle = 'rgba(255,210,74,0.12)';
+    const x = cell.c * CELL, y = cell.r * CELL;
+    ctx.fillRect(x + 4, y + 4, CELL - 8, CELL - 8);
+    ctx.strokeRect(x + 4, y + 4, CELL - 8, CELL - 8);
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#ffe8a8';
+    ctx.font = 'bold 11px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, x + CELL / 2, y + CELL / 2);
+    ctx.restore();
   }
   function drawMoveGhost() {
     if (!moveMode || !mouseCell) return;

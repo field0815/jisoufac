@@ -95,10 +95,10 @@ G.CONFIG = {
   GROWTH_NEXT: { 구더기: '엄지', 엄지: '자실장', 자실장: '성체실장', 새끼사육실장: '사육실장', 새끼독라: '독라' },
 
   // ---- 분쇄기 / 배합기 -------------------------------------------------
-  GRIND_TARGET: 50,        // 무게 50 채우면 분쇄육 1개
-  UNCHI_WEIGHT: 10,
-  MIX_FOOD: 50,             // 배합기: 분쇄육1 + 운치10 → 실장푸드 50
-  MIX_UNCHI: 10,            // 배합기 1회 산출에 필요한 운치 개수
+  GRIND_TARGET: 25,        // 무게 25 채우면 분쇄육 1개
+  UNCHI_WEIGHT: 5,
+  MIX_FOOD: 100,             // 배합기: 분쇄육1 + 운치10 → 실장푸드 50
+  MIX_UNCHI: 5,            // 배합기 1회 산출에 필요한 운치 개수
 
   // 배회 개체 속도 (칸/초): 성체 빠르고 어릴수록 느림
   WANDER_SPEED: { 성체실장: 1.6, 자실장: 1.1, 엄지: 0.8, 구더기: 0.5, 점액덩어리: 0.4 },
@@ -113,7 +113,6 @@ G.CONFIG = {
   CHEAT_MONEY: 999999,
   CHEAT_CREATURES: 10,
   START_MONEY: 10000,
-  START_FOOD: 1000,
 };
 
 /* ---- 방향 정의 (0:상 1:우 2:하 3:좌) ------------------------------------ */
@@ -147,11 +146,11 @@ G.PRODUCTS = {
   실장푸드: { color: '#7a4', img: 'food.png',   isProduct: false, size: 0 }, // 자원(사료)
   운치:     { color: '#964', img: 'unchi.png',  isProduct: false, size: 10 }, // 자원(배설물)
   // 조리실 요리 (실장육보다 비싼 고급 화물, 고정가)
-  꼬치훈제: { color: '#c8862a', img: 'skewer.png',  isProduct: true, flatPrice: 380 },
-  통조림:   { color: '#9aa6b0', img: 'can.png',     isProduct: true, flatPrice: 420 },
-  진공포장: { color: '#7aa0c0', img: 'vacuum.png',  isProduct: true, flatPrice: 500 },
-  실장젓갈: { color: '#b06a6a', img: 'jeotgal.png', isProduct: true, flatPrice: 360 },
-  실장무침: { color: '#c89a4a', img: 'muchim.png',  isProduct: true, flatPrice: 390 },
+  꼬치훈제: { color: '#c8862a', img: 'skewer.png',  isProduct: true, flatPrice: 280 },
+  통조림:   { color: '#9aa6b0', img: 'can.png',     isProduct: true, flatPrice: 320 },
+  진공포장: { color: '#7aa0c0', img: 'vacuum.png',  isProduct: true, flatPrice: 300 },
+  실장젓갈: { color: '#b06a6a', img: 'jeotgal.png', isProduct: true, flatPrice: 260 },
+  실장무침: { color: '#c89a4a', img: 'muchim.png',  isProduct: true, flatPrice: 290 },
 };
 
 /* 등급: 3스탯 중 최고값 기준 */
@@ -168,7 +167,7 @@ G.PRICE_DEFAULTS = {
   // 실장육(도축기 산출): 육질·크기 비례
   실장육:   { base: 10, 육질: 2,  크기: 2 },
   // 사육실장(우리 판매): 개념 비례 + 크기 반비례(작을수록 비쌈). 새끼사육실장도 이 계수 사용.
-  사육실장: { base: 30, 개념: 5,  크기역기준: 60, 크기역: 1 },
+  사육실장: { base: 20, 개념: 2,  크기역기준: 60, 크기역: 1 },
   // 독라(우리 판매): 육질·크기 비례. 새끼독라도 이 계수 사용.
   독라:     { base: 8,  육질: 2,  크기: 1 },
 };
@@ -211,7 +210,7 @@ G.DEVICES = {
   catcher: { cat: 'special', name: '포획기', w: 1, h: 1, img: 'catcher.png', color: '#3a8a6a', rotatable: true, range: { w: 5, h: 5 }, special: 'catch', filterable: true, unlock: '포획기', desc: '5×5 범위 배회 실장석을 출력칸으로 모음(필터).' },
   skewer: { cat: 'special', name: '꼬챙이', w: 1, h: 1, img: 'skewer_dev.png', color: '#9a6a2a', rotatable: false, range: { w: 3, h: 3 }, special: 'skewer', unlock: '꼬챙이', desc: '실장석을 올리면 고정(테겍 테겍). 1분 후 파괴. 3×3 범위 육질 상승(확률).' },
   feeder: { cat: 'special', name: '사료분배기', w: 1, h: 1, img: 'feeder.png', color: '#7a8a3a', rotatable: true, range: { w: 3, h: 5 }, special: 'feed', unlock: '사료분배기', desc: '3×5 범위 실장석 성장 2배(사료도 2배 소모, R로 방향 전환).' },
-  packer: { cat: 'special', name: '포장기', w: 3, h: 3, img: 'warehouse.png', color: '#7b6a42', rotatable: true, special: 'pack', desc: '판매 가능한 물자가 들어오는 즉시 판매됨.' },
+  packer: { cat: 'special', name: '포장기', w: 3, h: 3, img: 'packer.png', color: '#7b6a42', rotatable: true, special: 'pack', desc: '판매 가능한 물자가 들어오는 즉시 판매됨.' },
 };
 
 G.BUILD_COST = {

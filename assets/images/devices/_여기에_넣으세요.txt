@@ -26,15 +26,18 @@
   deshell.png     ← 탈복기   (프레임 192x96)
   grinder.png     ← 분쇄기   (프레임 96x96)
   correction.png  ← 교정시설 (프레임 144x144 — 자실장 6마리 수용 우리)
+  correction_teacher.png ← 교정시설(사육실장 교사 장착됨, 프레임 144x144)
   mixer.png       ← 배합기   (프레임 96x96)
   cookery.png     ← 조리실   (프레임 144x96)
 
 특수(모두 1x1, 프레임 48x48. 고스트/설치 시 영향 범위가 노란 점선으로 표시됨):
   speaker.png     ← 태교 스피커 (3x3 범위 스탯↑)
-  pointer.png     ← 레드 포인터 (1x5 범위 출산↑, R로 방향)
+  pointer.png     ← 레드 포인터 (1x5 범위 출산↑, R로 방향 / 기본 그래픽 방향은 →)
   catcher.png     ← 포획기     (5x5 범위 배회개체 수거, R로 출력방향)
-  skewer_dev.png  ← 꼬챙이     (3x3 범위 육질↑, 실장석 1마리 고정)
+  skewer_dev.png  ← 꼬챙이     (표시 48x96, 건물 크기 48x48, 회전 없음)
+  skewer_dev_loaded.png ← 꼬챙이(실장석 장착됨, 표시 48x96, 회전 없음)
   feeder.png      ← 사료분배기 (3x5 범위 성장2배, R로 방향)
+  packer.png      ← 포장기     (프레임 144x144, 판매 가능 물자 즉시 판매)
 
 * 한 프레임 크기는 자유 — 게임이 가로 4등분해서 사용. 파일 없으면 색 블록(벨트는 화살표 흐름)으로 표시.
 * 프레임 속도: js/config.js 의 ANIM_FPS(기본 6). 파일명/크기는 G.DEVICES.

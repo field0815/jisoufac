@@ -122,12 +122,12 @@ G.Assets = (function () {
     return true;
   }
   // 장치: 현재 프레임(가로 4). 그렸으면 true.
-  function drawDeviceSprite(ctx, type, x, y, w, h) {
-    return drawFrame(ctx, deviceImg(type), x, y, w, h, frame(), 0, 4, 1);
+  function drawDeviceSprite(ctx, type, x, y, w, h, frameIdx) {
+    return drawFrame(ctx, deviceImg(type), x, y, w, h, frameIdx == null ? frame() : frameIdx, 0, 4, 1);
   }
   // 파일명을 직접 지정해 장치 스프라이트(가로 4프레임) 그리기 (예: birthing_ready.png)
-  function drawDeviceSpriteNamed(ctx, fileName, x, y, w, h) {
-    return drawFrame(ctx, loadImage('assets/images/devices/' + fileName), x, y, w, h, frame(), 0, 4, 1);
+  function drawDeviceSpriteNamed(ctx, fileName, x, y, w, h, frameIdx) {
+    return drawFrame(ctx, loadImage('assets/images/devices/' + fileName), x, y, w, h, frameIdx == null ? frame() : frameIdx, 0, 4, 1);
   }
   // 장치 프레임을 "원본 비율 유지"로 (cx,cy) 중심에 그림. 길이(가로)를 targetW에 맞춤.
   function drawDeviceFit(ctx, type, cx, cy, targetW, frameIdx) {
