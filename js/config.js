@@ -41,6 +41,8 @@ G.CONFIG = {
   // 실장석 스탯 범위 (성체)
   ADULT_STAT_MIN: 10,
   ADULT_STAT_MAX: 50,
+  STAT_MAX: 200,
+  SIZE_MAX: 100,
   BREED_VARIANCE: 10,
 
   // 크기 유전 비율 (성체 크기 대비)
@@ -68,7 +70,7 @@ G.CONFIG = {
 
   // ---- 특수 장치 -------------------------------------------------------
   NURTURE_CHANCE: 0.35,     // 태교 스피커: 초당 스탯 +1 확률
-  SKEWER_CHANCE: 0.4,       // 꼬챙이: 초당 육질 +1 확률
+  SKEWER_CHANCE: 0.2,       // 꼬챙이: 초당 개념 +1 확률
   BIRTH_BOOST: 2,           // 레드 포인터: 출산 속도 배수
   FEED_GROWTH_MULT: 2,      // 사료분배기: 성장/사료 소모 배수
   CATCH_INTERVAL: 1.0,      // 포획기: 수거 주기(초)
@@ -145,12 +147,14 @@ G.PRODUCTS = {
   분쇄육:   { color: '#a55', img: 'minced.png', isProduct: true,  flatPrice: 5 },   // 분쇄기 산출 / 배합기 재료
   실장푸드: { color: '#7a4', img: 'food.png',   isProduct: false, size: 0 }, // 자원(사료)
   운치:     { color: '#964', img: 'unchi.png',  isProduct: false, size: 10 }, // 자원(배설물)
-  // 조리실 요리 (실장육보다 비싼 고급 화물, 고정가)
-  꼬치훈제: { color: '#c8862a', img: 'skewer.png',  isProduct: true, flatPrice: 280 },
-  통조림:   { color: '#9aa6b0', img: 'can.png',     isProduct: true, flatPrice: 320 },
-  진공포장: { color: '#7aa0c0', img: 'vacuum.png',  isProduct: true, flatPrice: 300 },
-  실장젓갈: { color: '#b06a6a', img: 'jeotgal.png', isProduct: true, flatPrice: 260 },
-  실장무침: { color: '#c89a4a', img: 'muchim.png',  isProduct: true, flatPrice: 290 },
+  위석:     { color: '#6f8f9f', img: 'bezoar.png', isProduct: false, size: 10 },
+  조미료:   { color: '#e8d37a', img: 'seasoning.png', isProduct: false, size: 0 },
+  // 조리실 요리 (실장육보다 비싼 고급 화물, 기본가 + 재료 육질 보너스)
+  꼬치훈제: { color: '#c8862a', img: 'skewer.png',  isProduct: true, flatPrice: 280, qualityPrice: true },
+  통조림:   { color: '#9aa6b0', img: 'can.png',     isProduct: true, flatPrice: 320, qualityPrice: true },
+  진공포장: { color: '#7aa0c0', img: 'vacuum.png',  isProduct: true, flatPrice: 300, qualityPrice: true },
+  실장젓갈: { color: '#b06a6a', img: 'jeotgal.png', isProduct: true, flatPrice: 260, qualityPrice: true },
+  실장무침: { color: '#c89a4a', img: 'muchim.png',  isProduct: true, flatPrice: 290, qualityPrice: true },
 };
 
 /* 등급: 3스탯 중 최고값 기준 */
@@ -166,8 +170,8 @@ G.GRADES = [
 G.PRICE_DEFAULTS = {
   // 실장육(도축기 산출): 육질·크기 비례
   실장육:   { base: 10, 육질: 2,  크기: 2 },
-  // 사육실장(우리 판매): 개념 비례 + 크기 반비례(작을수록 비쌈). 새끼사육실장도 이 계수 사용.
-  사육실장: { base: 20, 개념: 2,  크기역기준: 60, 크기역: 1 },
+  // 사육실장(우리 판매): 새끼=기본가+개념 비례, 성체=새끼 가격의 절반. 크기는 가격에 영향 없음.
+  사육실장: { base: 500, 개념: 5 },
   // 독라(우리 판매): 육질·크기 비례. 새끼독라도 이 계수 사용.
   독라:     { base: 8,  육질: 2,  크기: 1 },
 };
@@ -179,20 +183,21 @@ G.DEVICES = {
   crossbelt: { cat: 'logistics', name: '횡단 벨트',     w: 3, h: 1, img: 'crossbelt.png', color: '#6a6f7a', rotatable: true, unlock: '횡단벨트', desc: '입구에서 출구로 화물을 순간이동시켜 중간 칸을 건너뜀.' },
   sorter:    { cat: 'logistics', name: '분류기',        w: 1, h: 2, img: 'sorter.png',    color: '#7a6a3a', rotatable: true,  desc: '2칸 분배기. 화살표(앞)로 출력. 무필터=교대, 필터=지정 칸으로 배출.' },
   grabber:   { cat: 'logistics', name: '집게',          w: 3, h: 1, img: 'grabber.png',   color: '#8a5a3a', rotatable: true,  desc: '□에 조건 맞는 물체→잡아서 △에 놓음(△가 빈 바닥이면 풀어줌).' },
+  longgrabber: { cat: 'logistics', name: '긴팔 집게',    w: 5, h: 1, img: 'grabber.png', color: '#9a6a3a', rotatable: true, desc: '2칸 너머의 □에 있는 물체→잡아서 반대쪽 △에 놓음.' },
   tunnel:    { cat: 'logistics', name: '터널',          w: 5, h: 1, img: 'tunnel.png',    color: '#46506a', rotatable: true, unlock: '터널', desc: '입구에서 출구로 화물을 순간이동시킴. 중간 칸에는 건설 가능.' },
   warehouse: { cat: 'logistics', name: '창고',          w: 3, h: 3, img: 'warehouse.png', color: '#3a5a4a', rotatable: false, desc: '도착 화물 저장. 거래창에서 판매. 사방이 입구.' },
 
-  penbox:    { cat: 'production', name: '우리',          w: 3, h: 3, img: 'penbox.png',    color: '#4a6a3a', rotatable: false, variable: true, desc: '드래그로 크기 지정. 1칸당 성체5/새끼10 수용. 클릭=이름.' },
+  penbox:    { cat: 'production', name: '우리',          w: 3, h: 3, img: 'penbox.png',    color: '#4a6a3a', rotatable: false, variable: true, desc: '드래그로 설치/확장. 여러 번 확장하면 비정형 가능. 1칸당 성체5/새끼10 수용. 클릭=이름.' },
   birthing:  { cat: 'production', name: '출산대',        w: 2, h: 2, img: 'birthing.png',  color: '#7a3a5a', rotatable: true,  desc: '성체실장→10초마다 구더기(수명 180초).' },
 
   washbasin:  { cat: 'processing', name: '세면대',   w: 2, h: 1, img: 'washbasin.png',  color: '#3a5a7a', rotatable: true, desc: '점액덩어리 세척→구더기/엄지/자실장(1/3). 구더기는 변환하지 않음. 일꾼 슬롯3.',
                 worker: true, accept: ['점액덩어리'], time: 3 },
-  slaughter:  { cat: 'processing', name: '도축기',   w: 3, h: 3, img: 'slaughter.png',  color: '#a23a3a', rotatable: true, desc: '독라 태그만→실장육. 크기 10마다 실장육 1개. 일꾼 슬롯3.',
+  slaughter:  { cat: 'processing', name: '도축기',   w: 3, h: 3, img: 'slaughter.png',  color: '#a23a3a', rotatable: true, desc: '독라 태그만→실장육 + 위석. 크기 10마다 실장육 1개, 1마리당 위석 1개. 일꾼 슬롯3.',
                 worker: true, accept: ['독라', '새끼독라'], output: '실장육', time: 3 },
   deshell:    { cat: 'processing', name: '탈복기',   w: 4, h: 2, img: 'deshell.png',    color: '#7a7a3a', rotatable: true, desc: '성체실장/사육실장→독라, 자실장/새끼사육→새끼독라. 일꾼 슬롯3.',
                 worker: true, accept: ['성체실장', '자실장', '사육실장', '새끼사육실장'], convert: { 성체실장: '독라', 자실장: '새끼독라', 사육실장: '독라', 새끼사육실장: '새끼독라' }, time: 4 },
-  grinder:    { cat: 'processing', name: '분쇄기',   w: 2, h: 2, img: 'grinder.png',    color: '#5a5a5a', rotatable: true, desc: '실장석류·실장육→분쇄육(0.2초당 1마리, 무게 100=1개).',
-                accept: ['성체실장', '자실장', '엄지', '구더기', '사육실장', '새끼사육실장', '독라', '새끼독라', '실장육'], output: '분쇄육', time: 0.2 },
+  grinder:    { cat: 'processing', name: '분쇄기',   w: 2, h: 2, img: 'grinder.png',    color: '#5a5a5a', rotatable: true, desc: '실장석류·실장육→분쇄육. 위석→조미료 3개.',
+                accept: ['성체실장', '자실장', '엄지', '구더기', '사육실장', '새끼사육실장', '독라', '새끼독라', '실장육', '위석'], output: '분쇄육', time: 0.2 },
   correction: { cat: 'processing', name: '교정시설', w: 3, h: 3, img: 'correction.png', color: '#3a7a6a', rotatable: true, unlock: '교정시설', desc: '자실장·성체실장 6마리 수용. 사육실장 성체 장착 시 개념이 높을수록 교육 효율 증가. 육질0→실장육, 개념30↑·30초↑→사육실장 계열.',
                 accept: ['자실장', '성체실장'], hold: 6 },
   mixer:      { cat: 'processing', name: '배합기',   w: 2, h: 2, img: 'mixer.png',      color: '#6a4a7a', rotatable: true, unlock: '배합기', desc: '분쇄육1 + 운치10 → 실장푸드 50. 일꾼 슬롯3.',
@@ -206,9 +211,9 @@ G.DEVICES = {
   // ---- 특수 장치 (1x1, 영향 범위 range) -------------------------------
   speaker: { cat: 'special', name: '태교 스피커', w: 1, h: 1, img: 'speaker.png', color: '#4a7ab5', rotatable: false, range: { w: 3, h: 3 }, special: 'nurture', unlock: '태교스피커', desc: '3×3 범위 실장석의 육질/개념/크기를 확률적으로 +1.' },
   wall: { cat: 'special', name: '벽', w: 1, h: 1, img: 'wall.png', color: '#d6a85a', rotatable: false, desc: '타일 모서리 점에서 시작해 수평/수직 직선으로 설치. 드래그 선택 후 Del=삭제.' },
-  pointer: { cat: 'special', name: '레드 포인터', w: 1, h: 1, img: 'pointer.png', color: '#d23a3a', rotatable: true, range: { w: 1, h: 5 }, special: 'birth', unlock: '레드포인터', desc: '1×5 범위 출산대의 출산 속도 ↑(R로 방향 전환).' },
+  pointer: { cat: 'special', name: '레드 포인터', w: 1, h: 1, img: 'pointer.png', color: '#d23a3a', rotatable: true, range: { w: 1, h: 5 }, special: 'birth', unlock: '레드포인터', desc: '바라보는 방향 앞쪽 5칸 범위 출산대의 출산 속도 ↑(R로 방향 전환).' },
   catcher: { cat: 'special', name: '포획기', w: 1, h: 1, img: 'catcher.png', color: '#3a8a6a', rotatable: true, range: { w: 5, h: 5 }, special: 'catch', filterable: true, unlock: '포획기', desc: '5×5 범위 배회 실장석을 출력칸으로 모음(필터).' },
-  skewer: { cat: 'special', name: '꼬챙이', w: 1, h: 1, img: 'skewer_dev.png', color: '#9a6a2a', rotatable: false, range: { w: 3, h: 3 }, special: 'skewer', unlock: '꼬챙이', desc: '실장석을 올리면 고정(테겍 테겍). 1분 후 파괴. 3×3 범위 육질 상승(확률).' },
+  skewer: { cat: 'special', name: '꼬챙이', w: 1, h: 1, img: 'skewer_dev.png', color: '#9a6a2a', rotatable: false, range: { w: 5, h: 5 }, special: 'skewer', unlock: '꼬챙이', desc: '실장석을 올리면 고정(테겍, 테겍!). 1분 후 파괴. 주변 5×5 범위 개념 상승(확률).' },
   feeder: { cat: 'special', name: '사료분배기', w: 1, h: 1, img: 'feeder.png', color: '#7a8a3a', rotatable: true, range: { w: 3, h: 5 }, special: 'feed', unlock: '사료분배기', desc: '3×5 범위 실장석 성장 2배(사료도 2배 소모, R로 방향 전환).' },
   packer: { cat: 'special', name: '포장기', w: 3, h: 3, img: 'packer.png', color: '#7b6a42', rotatable: true, special: 'pack', desc: '판매 가능한 물자가 들어오는 즉시 판매됨.' },
 };
@@ -220,6 +225,7 @@ G.BUILD_COST = {
   tunnel: 100,
   sorter: 20,
   grabber: 30,
+  longgrabber: 60,
   warehouse: 500,
   penboxCell: 30,
   birthing: 200,
@@ -286,7 +292,7 @@ G.CORRECTION = { LINE_MIN: 1.5, LINE_MAX: 3.5, ESCAPE_CONCEPT: 20, ESCAPE_CHANCE
 
 /* 카테고리별 하위메뉴 */
 G.MENU = {
-  logistics:  { label: '물류', items: ['belt', 'guardbelt', 'crossbelt', 'tunnel', 'sorter', 'grabber', 'warehouse'] },
+  logistics:  { label: '물류', items: ['belt', 'guardbelt', 'crossbelt', 'tunnel', 'sorter', 'grabber', 'longgrabber', 'warehouse'] },
   production:  { label: '생산', items: ['penbox', 'birthing'] },
   processing:  { label: '가공', items: ['washbasin', 'slaughter', 'deshell', 'grinder', 'correction', 'mixer', 'cookery'] },
   special:     { label: '특수', items: ['wall', 'speaker', 'pointer', 'catcher', 'skewer', 'feeder', 'packer'] },

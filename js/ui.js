@@ -14,6 +14,28 @@ G.UI = (function () {
   let hiddenCheatCount = 0;
   let hiddenCheatTimer = 0;
 
+  function escAttr(s) { return String(s).replace(/"/g, '&quot;'); }
+  function productIcon(type, cls) {
+    const def = G.PRODUCTS[type];
+    if (!def || !def.img) return `<span class="${cls}" style="background:${def ? def.color : '#888'}"></span>`;
+    return `<span class="${cls}" style="background-image:url('assets/images/products/${escAttr(def.img)}');background-size:contain;background-position:center;"></span>`;
+  }
+  function creatureIcon(type, cls) {
+    const def = G.CREATURES[type];
+    if (!def || !def.img) return `<span class="${cls}" style="background:${def ? def.color : '#888'}"></span>`;
+    return `<span class="${cls} creature-ui-icon" style="background-image:url('assets/images/creatures/${escAttr(def.img)}');background-size:400% 400%;background-position:0 0;"></span>`;
+  }
+  function itemIcon(type, cls) {
+    if (G.PRODUCTS[type]) return productIcon(type, cls);
+    if (G.CREATURES[type]) return creatureIcon(type, cls);
+    return `<span class="${cls}" style="background:#888"></span>`;
+  }
+  function creatureLabel(type) {
+    if (type === '성체실장') return '성체실장석';
+    if (type === '자실장') return '자실장';
+    return (G.CREATURES[type] && G.CREATURES[type].label) || type;
+  }
+
   function init() {
     buildTopbar();
     buildOverlays();
@@ -26,11 +48,11 @@ G.UI = (function () {
     const bar = document.getElementById('topbar');
     bar.innerHTML = `
       <div class="tb-res tb-money">💰 <span id="tb-money">0</span></div>
-      <div class="tb-res">🥩 사료 <span id="tb-food">0</span></div>
-      <div class="tb-res">💩 운치 <span id="tb-unchi">0</span></div>
-      <div class="tb-res">🧂 조미료 <span id="tb-seasoning">0</span></div>
-      <div class="tb-res">🐾 성체 <span id="tb-adult">0</span></div>
-      <div class="tb-res">🍼 새끼 <span id="tb-young">0</span></div>
+      <div class="tb-res">${productIcon('실장푸드', 'res-icon')}실장푸드 <span id="tb-food">0</span></div>
+      <div class="tb-res">${productIcon('운치', 'res-icon')}운치 <span id="tb-unchi">0</span></div>
+      <div class="tb-res">${productIcon('조미료', 'res-icon')}조미료 <span id="tb-seasoning">0</span></div>
+      <div class="tb-res">${creatureIcon('성체실장', 'res-icon')}성체실장석 <span id="tb-adult">0</span></div>
+      <div class="tb-res">${creatureIcon('자실장', 'res-icon')}자실장 <span id="tb-young">0</span></div>
       <div class="tb-tabs" id="tb-tabs"></div>
       <button class="tb-options" id="tb-options" title="옵션">...</button>
       <div class="options-menu" id="options-menu"></div>`;
@@ -200,14 +222,14 @@ G.UI = (function () {
     document.getElementById('ovl-shop').innerHTML = `
       <div class="ovl-head">② 거래 <button class="ovl-close">✕</button></div>
       <div class="ovl-body">
-        <div class="stat-big">보유금 💰<b id="shop-money">0</b> · 사료 🥩<b id="shop-food">0</b></div>
-        <h3>🥩 실장푸드 구매 (개당 ₩${C.FOOD_PRICE})</h3>
+        <div class="stat-big">보유금 💰<b id="shop-money">0</b> · ${productIcon('실장푸드', 'res-icon')}실장푸드 <b id="shop-food">0</b></div>
+        <h3>${productIcon('실장푸드', 'res-icon')}실장푸드 구매 (개당 ₩${C.FOOD_PRICE})</h3>
         <div class="shop-buy" id="shop-buy-food"></div>
-        <h3>🧂 조미료 구매 (개당 💰<span id="shop-seasoning-price">0</span> · 1분마다 변동)</h3>
+        <h3>${productIcon('조미료', 'res-icon')}조미료 구매 (개당 💰<span id="shop-seasoning-price">0</span> · 1분마다 변동)</h3>
         <div class="shop-buy" id="shop-buy-seasoning"></div>
         <h3>🐾 실장석 구매</h3>
         <div class="shop-buy" id="shop-buy-cre"></div>
-        <h3>🏠 우리 실장석 판매 <span class="muted">(사육실장=개념↑·크기↓ / 독라=육질·크기)</span></h3>
+        <h3>🏠 우리 실장석 판매 <span class="muted">(사육실장=새끼 기본가+개념↑, 성체는 절반 / 독라=육질·크기)</span></h3>
         <div class="warehouse-list" id="pen-sell-list"></div>
         <h3>⚙ 자동판매 (생기는 즉시 판매)</h3>
         <div class="autosell-list" id="autosell-list"></div>
@@ -218,7 +240,7 @@ G.UI = (function () {
     [10, 50, 100, 1000].forEach(n => {
       const b = document.createElement('button');
       b.className = 'shop-btn';
-      b.innerHTML = `+${n}개<small>₩${(n * C.FOOD_PRICE).toLocaleString()}</small>`;
+      b.innerHTML = `${productIcon('실장푸드', 'shop-icon')}+${n}개<small>₩${(n * C.FOOD_PRICE).toLocaleString()}</small>`;
       b.addEventListener('click', () => buyFood(n));
       buyF.appendChild(b);
     });
@@ -226,7 +248,7 @@ G.UI = (function () {
     [1, 10, 50].forEach(n => {
       const b = document.createElement('button');
       b.className = 'shop-btn'; b.dataset.season = n;
-      b.innerHTML = `+${n}개<small>₩0</small>`;
+      b.innerHTML = `${productIcon('조미료', 'shop-icon')}+${n}개<small>₩0</small>`;
       b.addEventListener('click', () => buySeasoning(n));
       buyS.appendChild(b);
     });
@@ -234,7 +256,7 @@ G.UI = (function () {
     [['성체실장', C.BUY_ADULT], ['자실장', C.BUY_CHILD]].forEach(([t, cost]) => {
       const b = document.createElement('button');
       b.className = 'shop-btn';
-      b.innerHTML = `${G.CREATURES[t].label}<small>₩${cost.toLocaleString()}</small>`;
+      b.innerHTML = `${creatureIcon(t, 'shop-icon')}${creatureLabel(t)}<small>₩${cost.toLocaleString()}</small>`;
       b.addEventListener('click', () => buyCreature(t, cost));
       buyC.appendChild(b);
     });
@@ -242,7 +264,7 @@ G.UI = (function () {
     const asWrap = document.getElementById('autosell-list');
     Object.keys(G.PRODUCTS).filter(p => G.PRODUCTS[p].isProduct).forEach(t => {
       const b = document.createElement('button');
-      b.className = 'autosell-btn'; b.dataset.type = t; b.textContent = t;
+      b.className = 'autosell-btn'; b.dataset.type = t; b.innerHTML = `${productIcon(t, 'mini-icon')}${t}`;
       b.addEventListener('click', () => {
         S.autoSell[t] = !S.autoSell[t];
         if (S.autoSell[t]) G.Factory.sellSomeType(t, Infinity);   // 켜는 즉시 기존 재고 판매
@@ -272,8 +294,8 @@ G.UI = (function () {
       <div class="ovl-body">
         <div class="stat-big">분당 판매 <b id="stat-rate">0.0</b> · 누적매출 💰<b id="stat-sales">0</b></div>
         <div class="stat-sub">화물 <span id="stat-cargo">0</span> · 배회 <span id="stat-wander">0</span> · 장치 <span id="stat-build">0</span>
-          · 사료수요 <span id="stat-demand">0</span>/분 · 운치 <span id="stat-unchi">0</span>/분</div>
-        <div class="stat-sub">자원 — 🥩 사료 <b id="stat-food">0</b> · 💩 운치 <b id="stat-unchistock">0</b></div>
+          · 실장푸드 수요 <span id="stat-demand">0</span>/분 · 운치 <span id="stat-unchi">0</span>/분</div>
+        <div class="stat-sub">자원 — ${productIcon('실장푸드', 'res-icon')}실장푸드 <b id="stat-food">0</b> · ${productIcon('운치', 'res-icon')}운치 <b id="stat-unchistock">0</b></div>
         <h3>📈 누적 판매</h3>
         <div class="warehouse-list" id="sold-list"></div>
         <h3>💲 가격 계수 (데이터 파일에서 수정)</h3>
@@ -304,7 +326,7 @@ G.UI = (function () {
     const cost = n * C.FOOD_PRICE;
     if (S.money < cost) { flash('돈 부족! (₩' + cost.toLocaleString() + ')'); return; }
     S.money -= cost; S.food += n; G.Assets.playSfx('click');
-    flash('사료 +' + n + ' 구매 (💰-' + cost.toLocaleString() + ')');
+    flash('실장푸드 +' + n + ' 구매 (💰-' + cost.toLocaleString() + ')');
   }
   function buySeasoning(n) {
     const cost = n * Math.round(S.seasoningPrice || C.SEASONING_BASE);
@@ -317,7 +339,7 @@ G.UI = (function () {
     const c = G.Creatures.newWild(type);
     G.Factory.dropToFactory(c);
     S.money -= cost; G.Assets.playSfx('click');
-    flash(G.CREATURES[type].label + ' 구매 (💰-' + cost.toLocaleString() + ')');
+    flash(creatureLabel(type) + ' 구매 (💰-' + cost.toLocaleString() + ')');
   }
   function buyUpgrade(u) {
     const lv = S.upgrades[u.key] || 0;
@@ -358,10 +380,10 @@ G.UI = (function () {
     if (sig === lastPenSig) return;
     lastPenSig = sig;
     const rows = PEN_SELL_TYPES.filter(t => groups[t].n > 0).map(t => {
-      const g = groups[t]; const col = (G.CREATURES[t] && G.CREATURES[t].color) || '#888';
+      const g = groups[t];
       const unit = Math.round(g.val / g.n);
       const label = { 사육실장: '사육실장 성체', 새끼사육실장: '사육실장 새끼', 독라: '독라 성체', 새끼독라: '독라 새끼' }[t] || t;
-      return `<div class="wh-item"><span class="wh-dot" style="background:${col}"></span><span class="wh-name">${label} ×${g.n} <small class="unit">개당 💰${unit.toLocaleString()}</small></span><b>💰${g.val.toLocaleString()}</b>
+      return `<div class="wh-item">${creatureIcon(t, 'wh-icon')}<span class="wh-name">${label} ×${g.n} <small class="unit">개당 💰${unit.toLocaleString()}</small></span><b>💰${g.val.toLocaleString()}</b>
         <span class="sell-mini"><button data-pensell="1" data-type="${t}">1</button><button data-pensell="10" data-type="${t}">10</button><button data-pensell="100" data-type="${t}">100</button><button data-pensell="all" data-type="${t}">전부</button></span></div>`;
     }).join('');
     document.getElementById('pen-sell-list').innerHTML = rows || '<div class="muted">우리에 판매할 사육실장/독라 없음</div>';
@@ -389,8 +411,7 @@ G.UI = (function () {
         const list = S.warehouse[k];
         const val = list.reduce((s, d) => s + (d.isProduct ? (d.price || 1) : 2), 0);
         const unit = Math.round(val / list.length);
-        const col = (G.PRODUCTS[k] && G.PRODUCTS[k].color) || (G.CREATURES[k] && G.CREATURES[k].color) || '#888';
-        return `<div class="wh-item"><span class="wh-dot" style="background:${col}"></span><span class="wh-name">${k} ×${list.length} <small class="unit">개당 💰${unit.toLocaleString()}</small></span><b>💰${val.toLocaleString()}</b>
+        return `<div class="wh-item">${itemIcon(k, 'wh-icon')}<span class="wh-name">${k} ×${list.length} <small class="unit">개당 💰${unit.toLocaleString()}</small></span><b>💰${val.toLocaleString()}</b>
           <span class="sell-mini"><button data-sell="1" data-type="${k}">1</button><button data-sell="10" data-type="${k}">10</button><button data-sell="100" data-type="${k}">100</button><button data-sell="all" data-type="${k}">전부</button></span></div>`;
       }).join('');
       document.getElementById('warehouse-list').innerHTML = whHtml || '<div class="muted">재고 없음 (도축기 등으로 생산)</div>';
@@ -425,8 +446,7 @@ G.UI = (function () {
     if (soldSig !== lastSoldSig) {
       lastSoldSig = soldSig;
       document.getElementById('sold-list').innerHTML = Object.keys(S.sold).filter(k => S.sold[k]).map(k => {
-        const col = (G.PRODUCTS[k] && G.PRODUCTS[k].color) || (G.CREATURES[k] && G.CREATURES[k].color) || '#888';
-        return `<div class="wh-item"><span class="wh-dot" style="background:${col}"></span><span class="wh-name">${k}</span><b>${S.sold[k]}</b></div>`;
+        return `<div class="wh-item">${itemIcon(k, 'wh-icon')}<span class="wh-name">${k}</span><b>${S.sold[k]}</b></div>`;
       }).join('') || '<div class="muted">판매 기록 없음</div>';
     }
   }

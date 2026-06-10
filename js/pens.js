@@ -9,15 +9,37 @@ G.Pens = (function () {
   const S = G.State;
 
   function allPens() { return S.buildings.filter(b => b.type === 'penbox'); }
-  function cells(pen) { return pen.w * pen.h; }
+  function penCells(pen) {
+    if (Array.isArray(pen.cells) && pen.cells.length) return pen.cells;
+    const cells = [];
+    for (let r = 0; r < pen.h; r++) for (let c = 0; c < pen.w; c++) cells.push({ c, r });
+    return cells;
+  }
+  function cells(pen) { return penCells(pen).length; }
   function capAdult(pen) { return cells(pen) * C.PEN_ADULT_PER_CELL; }
   function capYoung(pen) { return cells(pen) * C.PEN_YOUNG_PER_CELL; }
   function isAdult(c) { return G.CREATURES[c.type] && G.CREATURES[c.type].isAdult; }
   function countAdult(pen) { return pen.creatures.filter(isAdult).length; }
   function countYoung(pen) { return pen.creatures.length - countAdult(pen); }
+  function hasCell(pen, c, r) { return penCells(pen).some(cell => cell.c === c && cell.r === r); }
+  function nearestPointInPen(pen, px, py) {
+    let best = null, bd = Infinity;
+    for (const cell of penCells(pen)) {
+      const x = Math.max(cell.c + 0.3, Math.min(cell.c + 0.7, px));
+      const y = Math.max(cell.r + 0.3, Math.min(cell.r + 0.7, py));
+      const d = Math.hypot(px - x, py - y);
+      if (d < bd) { bd = d; best = { x, y }; }
+    }
+    return best || { x: 0.5, y: 0.5 };
+  }
+  function randomPointInPen(pen) {
+    const list = penCells(pen);
+    const cell = list[Math.floor(Math.random() * list.length)] || { c: 0, r: 0 };
+    return { x: cell.c + 0.3 + Math.random() * 0.4, y: cell.r + 0.3 + Math.random() * 0.4 };
+  }
 
   function placeIn(pen, c) {
-    if (c.px == null) { c.px = 0.4 + Math.random() * (pen.w - 0.8); c.py = 0.4 + Math.random() * (pen.h - 0.8); const a = Math.random() * 6.28; c.pvx = Math.cos(a); c.pvy = Math.sin(a); }
+    if (c.px == null) { const p = randomPointInPen(pen); c.px = p.x; c.py = p.y; const a = Math.random() * 6.28; c.pvx = Math.cos(a); c.pvy = Math.sin(a); }
     pen.creatures.push(c);
   }
   function addToPen(pen, c) {
@@ -68,9 +90,10 @@ G.Pens = (function () {
         const c = list[i];
         G.Creatures.ageSlime(c, dt);
         // 사육실장(성체)은 오래 살수록 크기 증가(최대 100, 정수 단위로만 증가)
-        if (c.type === '사육실장' && c.stats && (c.stats.크기 || 0) < 100) {
+        const sizeMax = C.SIZE_MAX || 100;
+        if (c.type === '사육실장' && c.stats && (c.stats.크기 || 0) < sizeMax) {
           c._sizeAcc = (c._sizeAcc || 0) + (C.PET_SIZE_RATE || 0.15) * dt;
-          if (c._sizeAcc >= 1) { const inc = Math.floor(c._sizeAcc); c.stats.크기 = Math.min(100, (c.stats.크기 || 0) + inc); c._sizeAcc -= inc; }
+          if (c._sizeAcc >= 1) { const inc = Math.floor(c._sizeAcc); c.stats.크기 = Math.min(sizeMax, (c.stats.크기 || 0) + inc); c._sizeAcc -= inc; }
         }
         if (C.GROWTH_NEXT[c.type]) {
           c.growth = (c.growth || 0) + dt * fedRatio * (c._feedMult || 1); // 사료분배기 범위면 성장 2배
@@ -101,13 +124,17 @@ G.Pens = (function () {
       }
     }
     const lo = 0.3, hiX = pen.w - 0.3, hiY = pen.h - 0.3;
-    for (const c of list) { c.px = Math.max(lo, Math.min(hiX, c.px || 0.5)); c.py = Math.max(lo, Math.min(hiY, c.py || 0.5)); }
+    for (const c of list) {
+      c.px = Math.max(lo, Math.min(hiX, c.px || 0.5)); c.py = Math.max(lo, Math.min(hiY, c.py || 0.5));
+      if (!hasCell(pen, Math.floor(c.px), Math.floor(c.py))) { const p = nearestPointInPen(pen, c.px, c.py); c.px = p.x; c.py = p.y; }
+    }
   }
 
   function wander(c, pen, dt) {
     if (c.scream > 0) c.scream -= dt;   // '데챠앗!' 표시 시간 감소
     if (c.speechT > 0) c.speechT -= dt; // 말풍선 시간 감소
     const sp = (C.WANDER_SPEED[c.type] || 0.8) * 0.6 * C.MOVE_SCALE;
+    const oldX = c.px || 0.5, oldY = c.py || 0.5;
     if (c.flee && c.flee.t > 0) {
       c.flee.t -= dt;
       c.px += c.flee.vx * sp * 1.8 * dt; c.py += c.flee.vy * sp * 1.8 * dt;
@@ -122,6 +149,12 @@ G.Pens = (function () {
     if (c.px > hiX) { c.px = hiX; if (c.pvx) c.pvx = -Math.abs(c.pvx); if (c.flee) c.flee.vx = -Math.abs(c.flee.vx); }
     if (c.py < lo) { c.py = lo; if (c.pvy) c.pvy = Math.abs(c.pvy); if (c.flee) c.flee.vy = Math.abs(c.flee.vy); }
     if (c.py > hiY) { c.py = hiY; if (c.pvy) c.pvy = -Math.abs(c.pvy); if (c.flee) c.flee.vy = -Math.abs(c.flee.vy); }
+    if (!hasCell(pen, Math.floor(c.px), Math.floor(c.py))) {
+      const p = nearestPointInPen(pen, oldX, oldY);
+      c.px = p.x; c.py = p.y;
+      c.pvx = -(c.pvx || 0); c.pvy = -(c.pvy || 0);
+      if (c.flee) { c.flee.vx = -(c.flee.vx || 0); c.flee.vy = -(c.flee.vy || 0); }
+    }
   }
 
   // 포식자(성체실장/독라) 행동: 근처 사육실장 공격(→독라 변환) / 기본새끼 포식

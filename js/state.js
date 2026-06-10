@@ -67,6 +67,7 @@ window.G = window.G || {};
       if (k in base) base[k] = saved[k];
     });
     base.prices = Object.assign(clone(G.PRICE_DEFAULTS), base.prices || {});
+    if (base.prices.사육실장 && base.prices.사육실장.크기역 != null) base.prices.사육실장 = clone(G.PRICE_DEFAULTS.사육실장);
     base.upgrades = Object.assign(freshState().upgrades, base.upgrades || {});
     base.selection = [];
     base.overlay = null;
@@ -95,6 +96,7 @@ window.G = window.G || {};
         version: 1,
         savedAt: Date.now(),
         state: clone(G.State),
+        factoryRuntime: G.Factory && G.Factory.exportRuntimeState ? G.Factory.exportRuntimeState() : null,
       };
     }
     function save() {
@@ -107,6 +109,7 @@ window.G = window.G || {};
       if (!raw) return false;
       const data = JSON.parse(raw);
       G.applySavedState(data.state || data);
+      if (G.Factory && G.Factory.importRuntimeState) G.Factory.importRuntimeState(data.factoryRuntime || data.factory || null);
       if (!silent) {
         if (G.Factory && G.Factory.reloadState) G.Factory.reloadState();
         if (G.UI && G.UI.afterStateLoad) G.UI.afterStateLoad();
@@ -116,6 +119,7 @@ window.G = window.G || {};
     function reset() {
       localStorage.removeItem(KEY);
       G.resetRuntimeState();
+      if (G.Factory && G.Factory.importRuntimeState) G.Factory.importRuntimeState(null);
       if (G.Factory && G.Factory.reloadState) G.Factory.reloadState({ setupStart: true });
       if (G.UI && G.UI.afterStateLoad) G.UI.afterStateLoad();
       return true;

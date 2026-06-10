@@ -27,7 +27,7 @@ html, body {
   background: linear-gradient(#2c3040, #21242f);
   border-bottom: 1px solid #3a3f50; z-index: 20;
 }
-.tb-res { font-size: 14px; color: #cdd6e0; white-space: nowrap; }
+.tb-res { font-size: 14px; color: #cdd6e0; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
 .tb-res b, .tb-res span { color: #e8eef6; }
 .tb-money { font-size: 18px; font-weight: bold; color: #ffd964; }
 .tb-money span { color: #ffd964; }
@@ -222,6 +222,15 @@ html, body {
 .warehouse-list { display: flex; flex-direction: column; gap: 6px; max-width: 360px; }
 .wh-item { display: flex; align-items: center; gap: 10px; background: #20242e; padding: 8px 12px; border-radius: 8px; }
 .wh-dot { width: 14px; height: 14px; border-radius: 50%; }
+.res-icon, .wh-icon, .shop-icon, .mini-icon {
+  display: inline-block; flex: 0 0 auto; background-repeat: no-repeat;
+  image-rendering: auto; vertical-align: middle;
+}
+.res-icon { width: 18px; height: 18px; }
+.wh-icon { width: 24px; height: 24px; border-radius: 5px; }
+.shop-icon { width: 28px; height: 28px; }
+.mini-icon { width: 16px; height: 16px; margin-right: 5px; }
+.creature-ui-icon { background-repeat: no-repeat; }
 .wh-name { flex: 1; }
 .wh-item b { color: #ffd964; }
 
@@ -359,6 +368,12 @@ html, body {
 .di-row { display: flex; justify-content: space-between; gap: 10px; font-size: 11px; line-height: 1.35; }
 .di-row span { color: #94a4b8; flex: 0 0 auto; }
 .di-row b { color: #eaf2ff; font-weight: normal; text-align: right; overflow-wrap: anywhere; }
+.di-actions { margin-top: 8px; padding-top: 7px; border-top: 1px solid #394153; display: flex; justify-content: flex-end; }
+.di-actions button {
+  background: #2a3142; border: 1px solid #4a5165; color: #dfe8f5;
+  border-radius: 5px; padding: 5px 10px; cursor: pointer; font-size: 11px;
+}
+.di-actions button:hover { background: #3a4456; }
 
 /* 우리 이름 패널 */
 #pen-panel {
@@ -400,7 +415,7 @@ html, body {
 .shop-btn:hover { filter: brightness(1.12); }
 .shop-btn:active { transform: scale(0.97); }
 .autosell-list { display: flex; gap: 6px; flex-wrap: wrap; }
-.autosell-btn { background: #2a2e3a; color: #aab; border: 1px solid #444b5e; border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 13px; }
+.autosell-btn { background: #2a2e3a; color: #aab; border: 1px solid #444b5e; border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 13px; display: inline-flex; align-items: center; gap: 2px; }
 .autosell-btn.on { background: #3a6a4a; color: #eafff0; border-color: #4f7; }
 .autosell-btn.on::before { content: '✔ '; }
 .autosell-btn:hover { filter: brightness(1.12); }

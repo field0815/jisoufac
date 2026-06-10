@@ -8,6 +8,7 @@
 파일명(그대로 / js/config.js 의 G.PRODUCTS.img):
   meat.png     ← 실장육      minced.png ← 분쇄육
   food.png     ← 실장푸드(사료)   unchi.png  ← 운치
+  bezoar.png   ← 위석        seasoning.png ← 조미료
   skewer.png   ← 꼬치훈제    can.png    ← 통조림
   vacuum.png   ← 진공포장    jeotgal.png ← 실장젓갈
   muchim.png   ← 실장무침

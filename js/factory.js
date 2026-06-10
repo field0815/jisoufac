@@ -13,6 +13,12 @@ G.Factory = (function () {
   const CELL = C.CELL, COLS = C.GRID_COLS, ROWS = C.GRID_ROWS;
   const COLLIDE = 10 / CELL;
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const statMax = () => C.STAT_MAX || 200;
+  const sizeMax = () => C.SIZE_MAX || 100;
+  function addStat(stats, key, amount) {
+    if (!stats) return;
+    stats[key] = Math.min(key === '크기' ? sizeMax() : statMax(), (stats[key] || 0) + amount);
+  }
 
   let canvas, ctx, menuEl;
   let currentTool = null;
@@ -31,6 +37,8 @@ G.Factory = (function () {
   // 복사/청사진
   let pasteMode = false, pasteClip = null;
   const blueprints = {};   // 숫자키 → 클립 배열
+
+  function cloneData(v) { return JSON.parse(JSON.stringify(v)); }
 
   // 벽(경계) 그리기 모드
   let wallDragging = false, wallErase = false;
@@ -188,32 +196,62 @@ G.Factory = (function () {
     const pen = makePen(col, row, 3, 3, { free: true });
     if (pen) for (let i = 0; i < 5; i++) G.Pens.addToPen(pen, G.Creatures.newAdult());
   }
+  function rectRelCells(w, h) {
+    const cells = [];
+    for (let r = 0; r < h; r++) for (let c = 0; c < w; c++) cells.push({ c, r });
+    return cells;
+  }
+  function penRelCells(pen) { return Array.isArray(pen.cells) && pen.cells.length ? pen.cells : rectRelCells(pen.w, pen.h); }
+  function penAbsCells(pen, col, row) {
+    const bc = col == null ? pen.col : col, br = row == null ? pen.row : row;
+    return penRelCells(pen).map(cell => ({ c: bc + cell.c, r: br + cell.r }));
+  }
+  function penCellCount(pen) { return penRelCells(pen).length; }
+  function penHasRel(pen, c, r) { return penRelCells(pen).some(cell => cell.c === c && cell.r === r); }
+  function normalizeRelCells(absCells) {
+    let minC = Infinity, minR = Infinity, maxC = -Infinity, maxR = -Infinity;
+    absCells.forEach(cell => { minC = Math.min(minC, cell.c); minR = Math.min(minR, cell.r); maxC = Math.max(maxC, cell.c); maxR = Math.max(maxR, cell.r); });
+    const seen = new Set();
+    const cells = absCells.map(cell => ({ c: cell.c - minC, r: cell.r - minR }))
+      .filter(cell => { const k = cell.c + '|' + cell.r; if (seen.has(k)) return false; seen.add(k); return true; })
+      .sort((a, b) => a.r - b.r || a.c - b.c);
+    return { col: minC, row: minR, w: maxC - minC + 1, h: maxR - minR + 1, cells };
+  }
   function makePen(col, row, w, h, opts) {
-    for (let dr = 0; dr < h; dr++) for (let dc = 0; dc < w; dc++) {
-      if (!isOwnedCell(col + dc, row + dr) || occ[row + dr][col + dc] || hasBelt(col + dc, row + dr)) return null;
+    const cells = (opts && opts.cells) ? opts.cells.map(cell => ({ c: cell.c, r: cell.r })) : rectRelCells(w, h);
+    for (const cell of cells) {
+      const c = col + cell.c, r = row + cell.r;
+      if (!inGrid(c, r) || !isOwnedCell(c, r) || occ[r][c] || hasBelt(c, r)) return null;
     }
-    const cost = buildCost('penbox', w, h);
+    const cost = cells.length * (G.BUILD_COST.penboxCell || 0);
     if (!(opts && opts.free) && !spend(cost)) return null;
-    const b = { id: G.uid(), type: 'penbox', col, row, w, h, dir: 1, name: (++S.penSeq) + '번 우리', creatures: [], cost: (opts && opts.free) ? 0 : cost };
+    const b = { id: G.uid(), type: 'penbox', col, row, w, h, cells, dir: 1, name: (++S.penSeq) + '번 우리', creatures: [], cost: (opts && opts.free) ? 0 : cost };
     attach(b);
     return b;
   }
   // 기존 우리를 드래그 영역까지 확장
   function expandPen(pen, c2, r2, w2, h2) {
-    const minC = Math.min(pen.col, c2), minR = Math.min(pen.row, r2);
-    const maxC = Math.max(pen.col + pen.w - 1, c2 + w2 - 1), maxR = Math.max(pen.row + pen.h - 1, r2 + h2 - 1);
-    for (let r = minR; r <= maxR; r++) for (let c = minC; c <= maxC; c++) {
-      const inPen = c >= pen.col && c < pen.col + pen.w && r >= pen.row && r < pen.row + pen.h;
-      if (inPen) continue;
-      if (!isOwnedCell(c, r) || occAt(c, r) || hasBelt(c, r)) return false; // 다른 것에 막힘
+    const oldAbs = penAbsCells(pen);
+    const abs = oldAbs.slice();
+    const oldSet = new Set(oldAbs.map(cell => cell.c + '|' + cell.r));
+    const existing = new Set(oldSet);
+    for (let r = r2; r < r2 + h2; r++) for (let c = c2; c < c2 + w2; c++) {
+      const k = c + '|' + r;
+      if (!existing.has(k)) abs.push({ c, r });
+      existing.add(k);
     }
-    const oldCells = pen.w * pen.h, newCells = (maxC - minC + 1) * (maxR - minR + 1);
+    for (const cell of abs) {
+      if (oldSet.has(cell.c + '|' + cell.r)) continue;
+      if (!inGrid(cell.c, cell.r) || !isOwnedCell(cell.c, cell.r) || occAt(cell.c, cell.r) || hasBelt(cell.c, cell.r)) return false;
+    }
+    const norm = normalizeRelCells(abs);
+    const oldCells = penCellCount(pen), newCells = norm.cells.length;
     const addCost = Math.max(0, newCells - oldCells) * (G.BUILD_COST.penboxCell || 0);
     if (!spend(addCost)) return false;
-    const dCol = pen.col - minC, dRow = pen.row - minR;
+    const dCol = pen.col - norm.col, dRow = pen.row - norm.row;
     detach(pen);
     pen.creatures.forEach(cr => { cr.px = (cr.px || 0.5) + dCol; cr.py = (cr.py || 0.5) + dRow; });
-    pen.col = minC; pen.row = minR; pen.w = maxC - minC + 1; pen.h = maxR - minR + 1;
+    pen.col = norm.col; pen.row = norm.row; pen.w = norm.w; pen.h = norm.h; pen.cells = norm.cells;
     pen.cost = (pen.cost || 0) + addCost;
     attach(pen);
     return true;
@@ -247,15 +285,23 @@ G.Factory = (function () {
       if (!filterTarget) return;
       const s = btn.dataset.stat;
       if (!s) filterTarget.statFilter = null;
-      else if (!filterTarget.statFilter) filterTarget.statFilter = { stat: s, op: '>=', value: parseInt(fp.querySelector('#fp-statval').value, 10) || 50 };
-      else filterTarget.statFilter.stat = s;
+      else {
+        const raw = filterTarget.statFilter ? filterTarget.statFilter.value : (parseInt(fp.querySelector('#fp-statval').value, 10) || 50);
+        const max = s === '크기' ? sizeMax() : statMax();
+        if (!filterTarget.statFilter) filterTarget.statFilter = { stat: s, op: '>=', value: clamp(raw, 1, max) };
+        else { filterTarget.statFilter.stat = s; filterTarget.statFilter.value = clamp(raw, 1, max); }
+      }
       G.Assets.playSfx('click');
     }));
     fp.querySelectorAll('.fp-op').forEach(btn => btn.addEventListener('click', () => {
       if (filterTarget && filterTarget.statFilter) { filterTarget.statFilter.op = btn.dataset.op; G.Assets.playSfx('click'); }
     }));
     fp.querySelector('#fp-statval').addEventListener('change', () => {
-      if (filterTarget && filterTarget.statFilter) { const v = parseInt(fp.querySelector('#fp-statval').value, 10); if (!isNaN(v)) filterTarget.statFilter.value = v; }
+      if (filterTarget && filterTarget.statFilter) {
+        const v = parseInt(fp.querySelector('#fp-statval').value, 10);
+        const max = filterTarget.statFilter.stat === '크기' ? sizeMax() : statMax();
+        if (!isNaN(v)) filterTarget.statFilter.value = clamp(v, 1, max);
+      }
     });
     const btns = fp.querySelector('.fp-btns');
     FILTER_TYPES.forEach(t => {
@@ -278,7 +324,7 @@ G.Factory = (function () {
     if (!panel) return;
     const one = (S.selection.length === 1) ? S.buildings.find(b => b.id === S.selection[0]) : null;
     const selKey = S.selection.join('|');
-    filterTarget = (one && (one.type === 'sorter' || one.type === 'grabber' || one.type === 'catcher')) ? one : null;
+    filterTarget = (one && (one.type === 'sorter' || isGrabberType(one.type) || one.type === 'catcher')) ? one : null;
     if (!filterTarget || S.overlay || S.screen !== 'factory' || filterPanelSuppressedKey === selKey) { panel.style.display = 'none'; return; }
     panel.style.display = 'block';
     panel.querySelector('.fp-title').textContent = (G.DEVICES[filterTarget.type].name) + ' 필터';
@@ -300,6 +346,7 @@ G.Factory = (function () {
     panel.querySelectorAll('.fp-st').forEach(btn => btn.classList.toggle('active', (sf ? sf.stat : '') === btn.dataset.stat));
     panel.querySelectorAll('.fp-op').forEach(btn => btn.classList.toggle('active', !!sf && sf.op === btn.dataset.op));
     const valInput = panel.querySelector('#fp-statval');
+    valInput.max = sf && sf.stat === '크기' ? sizeMax() : statMax();
     if (sf && document.activeElement !== valInput) valInput.value = sf.value;
     const laneRow = panel.querySelector('#fp-lane');
     if (filterTarget.type === 'sorter') {
@@ -373,6 +420,18 @@ G.Factory = (function () {
     refreshHotkeyBadges();
     G.Assets.playSfx('click');
   }
+  function exportRuntimeState() {
+    return { hotkeys: cloneData(hotkeys), blueprints: cloneData(blueprints) };
+  }
+  function importRuntimeState(data) {
+    data = data || {};
+    Object.keys(hotkeys).forEach(k => delete hotkeys[k]);
+    Object.assign(hotkeys, data.hotkeys || {});
+    Object.keys(blueprints).forEach(k => delete blueprints[k]);
+    Object.assign(blueprints, data.blueprints || {});
+    refreshHotkeyBadges();
+    renderBlueprintTab();
+  }
   function selectTool(type) {
     if (!isUnlocked(type)) {
       const def = G.DEVICES[type];
@@ -437,11 +496,18 @@ G.Factory = (function () {
     const workers = def.worker ? `<span>일꾼 ${C.WORKER_SLOTS}칸</span>` : '';
     const state = b ? deviceStateLine(b) : '';
     const details = b ? deviceInfoDetails(b) : deviceTypeDetails(type);
+    const actions = b ? deviceInfoActions(b) : '';
     el.innerHTML = `
       <div class="di-head"><b>${def.name}</b><button class="di-close">×</button></div>
       <div class="di-meta"><span>${def.w}×${def.h}</span>${rot}${range}${workers}</div>
-      <div class="di-desc">${def.desc || ''}</div>${state}${details}`;
+      <div class="di-desc">${def.desc || ''}</div>${state}${details}${actions}`;
     el.querySelector('.di-close').onclick = hideDeviceInfo;
+    const detachTeacherBtn = el.querySelector('[data-action="detach-teacher"]');
+    if (detachTeacherBtn) detachTeacherBtn.onclick = () => {
+      snapshot();
+      detachCorrectionTeacher(b);
+      showDeviceInfoForBuilding(b, deviceInfoAnchor ? deviceInfoAnchor.x : clientX, deviceInfoAnchor ? deviceInfoAnchor.y : clientY);
+    };
     el.style.display = 'block';
     deviceInfoAnchor = { x: clientX, y: clientY };
     positionMiniPanel(el, clientX, clientY, avoidInfoPanels(el));
@@ -473,7 +539,7 @@ G.Factory = (function () {
       const t = b.teacher && b.teacher.stats ? Math.floor(b.teacher.stats.개념 || 0) : null;
       return `<div class="di-state">교사 ${t == null ? '없음' : '개념 ' + t + '%'} · 수용 ${b.inmates ? b.inmates.length : 0}/${G.DEVICES.correction.hold}</div>`;
     }
-    if (b.type === 'sorter' || b.type === 'grabber' || b.type === 'catcher') {
+    if (b.type === 'sorter' || isGrabberType(b.type) || b.type === 'catcher') {
       const n = b.filter ? b.filter.length : 0;
       return `<div class="di-state">필터 ${n ? n + '종 선택됨' : '전체 통과'}</div>`;
     }
@@ -481,6 +547,10 @@ G.Factory = (function () {
   }
   function infoRows(rows) {
     return '<div class="di-extra">' + rows.filter(Boolean).map(r => `<div class="di-row"><span>${r[0]}</span><b>${r[1]}</b></div>`).join('') + '</div>';
+  }
+  function deviceInfoActions(b) {
+    if (b.type === 'correction' && b.teacher) return '<div class="di-actions"><button data-action="detach-teacher">교사 해제</button></div>';
+    return '';
   }
   function itemLabel(data) { return data ? (FILTER_LABEL[data.type] || (G.CREATURES[data.type] && G.CREATURES[data.type].label) || data.type) : '없음'; }
   function listText(list) { return list && list.length ? list.join(', ') : '없음'; }
@@ -492,12 +562,12 @@ G.Factory = (function () {
     const def = G.DEVICES[type]; if (!def) return '';
     if (type === 'belt' || type === 'guardbelt') return infoRows([['기능', '화물 운반'], ['출력', '방향 화살표']]);
     if (type === 'sorter') return infoRows([['기능', '필터 조건에 따라 2칸 분류'], ['필터 없음', '1번/2번 교대 출력']]);
-    if (type === 'grabber') return infoRows([['기능', '□에서 집어 △에 놓음'], ['필터', '품목/스탯 조건']]);
+    if (isGrabberType(type)) return infoRows([['기능', '□에서 집어 △에 놓음'], ['필터', '품목/스탯 조건']]);
     if (type === 'warehouse') return infoRows([['기능', '화물 저장'], ['판매', '거래창에서 판매']]);
     if (type === 'penbox') return infoRows([['기능', '실장석 사육'], ['수용', `1칸당 성체${C.PEN_ADULT_PER_CELL}/새끼${C.PEN_YOUNG_PER_CELL}`]]);
     if (type === 'birthing') return infoRows([['필요', '성체 실장석'], ['산출', '점액덩어리']]);
     if (type === 'washbasin') return infoRows([['필요', '점액덩어리'], ['산출', '구더기/엄지/자실장']]);
-    if (type === 'slaughter') return infoRows([['필요', '독라/새끼독라'], ['산출', '실장육']]);
+    if (type === 'slaughter') return infoRows([['필요', '독라/새끼독라'], ['산출', '실장육 + 위석']]);
     if (type === 'deshell') return infoRows([['필요', '실장석/사육실장 계열'], ['산출', '독라 계열']]);
     if (type === 'grinder') return infoRows([['필요', '실장석류/실장육'], ['산출', '분쇄육']]);
     if (type === 'correction') return infoRows([['필요', '자실장/성체실장'], ['산출', '사육실장 계열 또는 실장육']]);
@@ -533,7 +603,8 @@ G.Factory = (function () {
       ['투입물', itemLabel(b.item)],
       ['만드는 중', b.item ? `실장육 ${Math.floor(((b.item.stats && b.item.stats.크기) || 0) / 10)}개` : '없음'],
       ['진행', progressText(b.timer, def.time / workerMult(b))],
-      ['출력 대기', b.outputs && b.outputs.length ? b.outputs.length + '개' : '없음'],
+      ['실장육 대기', b.outputs && b.outputs.length ? b.outputs.length + '개' : '없음'],
+      ['위석 대기', b.sideOutputs && b.sideOutputs.length ? b.sideOutputs.length + '개' : '없음'],
     ]);
     if (b.type === 'deshell') return infoRows([
       ['필요', listText(def.accept)],
@@ -572,7 +643,7 @@ G.Factory = (function () {
       ['필터 레인', (b.filterLane || 1) + '번'],
       ['버퍼', b.buffer && b.buffer.length ? b.buffer.length + '개' : '없음'],
     ]);
-    if (b.type === 'grabber') return infoRows([
+    if (isGrabberType(b.type)) return infoRows([
       ['기능', '□에서 집어 △에 놓음'],
       ['들고 있음', itemLabel(b.holding)],
       ['필터', b.filter && b.filter.length ? b.filter.length + '종' : '전체 통과'],
@@ -705,23 +776,24 @@ G.Factory = (function () {
     return { col: cell.col - Math.floor((fp.w - 1) / 2), row: cell.row - Math.floor((fp.h - 1) / 2) };
   }
   function deviceCells(b) {
-    if (b.type === 'penbox') { const a = []; for (let dr = 0; dr < b.h; dr++) for (let dc = 0; dc < b.w; dc++) a.push({ c: b.col + dc, r: b.row + dr }); return a; }
+    if (b.type === 'penbox') return penAbsCells(b);
     if (b.type === 'tunnel' || b.type === 'crossbelt') { const e = transportEnds(b); return [e.back, e.front]; }
     return footprint(b.type, b.col, b.row, b.dir).cells;
   }
   function footprintCellsOf(b) {
     if (b.type === 'belt' || b.type === 'guardbelt') return [{ c: b.col, r: b.row }];
-    if (b.type === 'grabber') { const g = grabberRoles(b); return [g.pickup, g.mid, g.drop]; }
+    if (isGrabberType(b.type)) { const g = grabberRoles(b); return [g.pickup, g.mid, g.drop]; }
     return deviceCells(b);
   }
+  function isGrabberType(type) { return type === 'grabber' || type === 'longgrabber'; }
   function grabberRoles(b) {
-    const cells = footprint('grabber', b.col, b.row, b.dir).cells;
+    const cells = footprint(b.type || 'grabber', b.col, b.row, b.dir).cells;
     let o;
     if (b.dir === 1) o = cells.slice().sort((a, z) => a.c - z.c);
     else if (b.dir === 3) o = cells.slice().sort((a, z) => z.c - a.c);
     else if (b.dir === 2) o = cells.slice().sort((a, z) => a.r - z.r);
     else o = cells.slice().sort((a, z) => z.r - a.r);
-    return { pickup: o[0], mid: o[1], drop: o[2] };
+    return { pickup: o[0], mid: o[Math.floor(o.length / 2)], drop: o[o.length - 1] };
   }
   function washInputCell(b) {
     if (b.dir === 1) return { c: b.col, r: b.row };
@@ -742,6 +814,16 @@ G.Factory = (function () {
   // 특수장치 영향 범위 사각형(셀 단위, 장치 중심 기준). rotatable이면 dir 홀수에서 가로/세로 전환.
   function rangeRect(type, col, row, dir) {
     const rg = G.DEVICES[type] && G.DEVICES[type].range; if (!rg) return null;
+    if (type === 'pointer') {
+      const v = DIR.vec[dir] || DIR.vec[1];
+      let minC = Infinity, minR = Infinity, maxC = -Infinity, maxR = -Infinity;
+      for (let i = 1; i <= 5; i++) {
+        const c = col + v.x * i, r = row + v.y * i;
+        minC = Math.min(minC, c); minR = Math.min(minR, r);
+        maxC = Math.max(maxC, c); maxR = Math.max(maxR, r);
+      }
+      return { x0: minC, y0: minR, x1: maxC + 1, y1: maxR + 1 };
+    }
     let rw = rg.w, rh = rg.h;
     if (G.DEVICES[type].rotatable && (dir % 2 === 1)) { const t = rw; rw = rh; rh = t; }
     const cx = col + 0.5, cy = row + 0.5;
@@ -816,8 +898,8 @@ G.Factory = (function () {
     const placeCells = (type === 'tunnel' || type === 'crossbelt') ? deviceCells({ type, col, row, dir, w: fp.w, h: fp.h }) : fp.cells;
     if (!footprintOwned(placeCells)) return false;
     if (type === 'belt' || type === 'guardbelt') { const cell = fp.cells[0]; return !occAt(cell.c, cell.r); }
-    if (type === 'grabber') {
-      const { mid } = grabberRoles({ col, row, dir });
+    if (isGrabberType(type)) {
+      const { mid } = grabberRoles({ type, col, row, dir });
       return !(occAt(mid.c, mid.r) || hasBelt(mid.c, mid.r));
     }
     for (const cell of placeCells) {
@@ -841,7 +923,7 @@ G.Factory = (function () {
       removeBeltAtCell(b.col, b.row);
       if (!beltGrid[b.row][b.col]) beltGrid[b.row][b.col] = { h: null, v: null };
       beltGrid[b.row][b.col][b.axis] = b;
-    } else if (b.type === 'grabber') {
+    } else if (isGrabberType(b.type)) {
       const { mid } = grabberRoles(b); occ[mid.r][mid.c] = b.id;
     } else {
       for (const cell of deviceCells(b)) if (inGrid(cell.c, cell.r)) { removeBeltAtCell(cell.c, cell.r); occ[cell.r][cell.c] = b.id; }
@@ -867,7 +949,7 @@ G.Factory = (function () {
         b.axis = (b.dir === 1 || b.dir === 3) ? 'h' : 'v';
         if (!beltGrid[b.row][b.col]) beltGrid[b.row][b.col] = { h: null, v: null };
         beltGrid[b.row][b.col][b.axis] = b;
-      } else if (b.type === 'grabber') { const { mid } = grabberRoles(b); if (inGrid(mid.c, mid.r)) occ[mid.r][mid.c] = b.id; }
+      } else if (isGrabberType(b.type)) { const { mid } = grabberRoles(b); if (inGrid(mid.c, mid.r)) occ[mid.r][mid.c] = b.id; }
       else { for (const cell of deviceCells(b)) if (inGrid(cell.c, cell.r)) occ[cell.r][cell.c] = b.id; }
     }
   }
@@ -905,7 +987,7 @@ G.Factory = (function () {
   function clipFromBuildings(builds) {
     let minC = Infinity, minR = Infinity;
     builds.forEach(b => { minC = Math.min(minC, b.col); minR = Math.min(minR, b.row); });
-    return builds.map(b => ({ type: b.type, dc: b.col - minC, dr: b.row - minR, dir: b.dir, w: b.w, h: b.h }));
+    return builds.map(b => ({ type: b.type, dc: b.col - minC, dr: b.row - minR, dir: b.dir, w: b.w, h: b.h, cells: b.type === 'penbox' ? penRelCells(b).map(cell => ({ c: cell.c, r: cell.r })) : undefined }));
   }
   function copySelection() {
     closeAuxPanels();
@@ -920,7 +1002,7 @@ G.Factory = (function () {
     snapshot();
     for (const it of pasteClip) {
       const c = col + it.dc, r = row + it.dr;
-      if (it.type === 'penbox') makePen(c, r, it.w, it.h);   // 점유 시 makePen이 실패(덮어쓰기 X)
+      if (it.type === 'penbox') makePen(c, r, it.w, it.h, { cells: it.cells });   // 점유 시 makePen이 실패(덮어쓰기 X)
       else if (it.type === 'belt' || it.type === 'guardbelt') placeBelt(c, r, it.dir, it.type);
       else placeDevice(it.type, c, r, it.dir);
     }
@@ -957,7 +1039,7 @@ G.Factory = (function () {
     if (b.type === 'belt' || b.type === 'guardbelt') {
       const bc = beltGrid[b.row][b.col];
       if (bc) { if (bc.h === b) bc.h = null; if (bc.v === b) bc.v = null; if (!bc.h && !bc.v) beltGrid[b.row][b.col] = null; }
-    } else if (b.type === 'grabber') {
+    } else if (isGrabberType(b.type)) {
       const { mid } = grabberRoles(b); if (occ[mid.r][mid.c] === b.id) occ[mid.r][mid.c] = null;
     } else {
       for (const cell of deviceCells(b)) if (inGrid(cell.c, cell.r) && occ[cell.r][cell.c] === b.id) occ[cell.r][cell.c] = null;
@@ -1013,14 +1095,15 @@ G.Factory = (function () {
     const b = { id: G.uid(), type, col, row, w: fp.w, h: fp.h, dir, cost };
     if (type === 'birthing') { b.worker = null; b.state = 'idle'; b.birthTimer = 0; b.lifeTimer = 0; }
     else if (type === 'washbasin') { b.state = 'idle'; b.item = null; b.washTimer = 0; }
-    else if (type === 'grabber') { b.holding = null; b.cd = 0; b.filter = []; }
+    else if (isGrabberType(type)) { b.holding = null; b.cd = 0; b.filter = []; }
     else if (type === 'sorter') { b.toggle = 0; b.filter = []; b.filterLane = 1; b.buffer = []; }
-    else if (['slaughter', 'deshell', 'grinder'].includes(type)) { b.item = null; b.timer = 0; b.state = 'idle'; b.weight = 0; b.outputs = []; }
+    else if (['slaughter', 'deshell', 'grinder'].includes(type)) { b.item = null; b.timer = 0; b.state = 'idle'; b.weight = 0; b.outputs = []; if (type === 'slaughter') b.sideOutputs = []; }
     else if (type === 'correction') { b.inmates = []; b.state = 'idle'; }
     else if (type === 'mixer') { b.slotMeat = null; b.unchiN = 0; b.timer = 0; b.state = 'idle'; }
     else if (type === 'cookery') { b.mats = {}; b.cooking = null; b.timer = 0; b.state = 'idle'; }
     else if (type === 'catcher') { b.filter = []; b.cd = 0; }
     else if (type === 'skewer') { b.held = null; }
+    else if (type === 'packer') { b.state = 'idle'; b.packT = 0; }
     else if (type === 'tunnel' || type === 'crossbelt') { b.queue = []; }
     if (G.DEVICES[type].worker) b.workers = [];  // 일꾼 슬롯 (속도 부스트)
     attach(b);
@@ -1042,7 +1125,7 @@ G.Factory = (function () {
     const ctr = buildingCenter(b);
     const release = (d) => { if (d && !d.isProduct && G.CREATURES[d.type]) spawnWanderer(d, ctr.gx + (Math.random() - 0.5), ctr.gy + (Math.random() - 0.5)); };
     // 집게: 들고 있던 것만 처리(겹친 칸의 화물은 건드리지 않음)
-    if (b.type === 'grabber') { release(b.holding); detach(b); return; }
+    if (isGrabberType(b.type)) { release(b.holding); detach(b); return; }
     release(b.worker); release(b.item); release(b.holding); release(b.teacher);
     release(b.slotMeat); release(b.slotUnchi); release(b.held);
     if (b.buffer) b.buffer.forEach(release);
@@ -1110,10 +1193,14 @@ G.Factory = (function () {
   }
   function canPlaceMoved(b, col, row) {
     if (b.type !== 'penbox') return canPlace(b.type, col, row, b.dir);
-    for (let dr = 0; dr < b.h; dr++) for (let dc = 0; dc < b.w; dc++) {
-      if (!isOwnedCell(col + dc, row + dr) || occAt(col + dc, row + dr) || hasBelt(col + dc, row + dr)) return false;
+    for (const cell of penAbsCells(b, col, row)) {
+      if (!isOwnedCell(cell.c, cell.r) || occAt(cell.c, cell.r) || hasBelt(cell.c, cell.r)) return false;
     }
     return true;
+  }
+  function centeredOriginFor(type, center, dir) {
+    const fp = footprint(type, 0, 0, dir);
+    return { col: center.c - Math.floor((fp.w - 1) / 2), row: center.r - Math.floor((fp.h - 1) / 2) };
   }
   function cancelMove() {
     closeAuxPanels();
@@ -1125,12 +1212,17 @@ G.Factory = (function () {
   function rotateBuilding(b) {
     closeAuxPanels();
     if (!b || !G.DEVICES[b.type] || !G.DEVICES[b.type].rotatable) return;
-    const od = b.dir, ow = b.w, oh = b.h;
+    const od = b.dir, ow = b.w, oh = b.h, oc = b.col, or = b.row;
+    const center = isGrabberType(b.type) ? grabberRoles(b).mid : null;
     detach(b);
     b.dir = (b.dir + 1) % 4;
+    if (isGrabberType(b.type)) {
+      const o = centeredOriginFor(b.type, center, b.dir);
+      b.col = o.col; b.row = o.row;
+    }
     if (b.type !== 'penbox') { const fp = footprint(b.type, b.col, b.row, b.dir); b.w = fp.w; b.h = fp.h; }
     if (canPlace(b.type, b.col, b.row, b.dir)) { attach(b); G.Assets.playSfx('rotate'); }
-    else { b.dir = od; b.w = ow; b.h = oh; attach(b); }
+    else { b.dir = od; b.w = ow; b.h = oh; b.col = oc; b.row = or; attach(b); }
   }
 
   /* ---- 선택 ----------------------------------------------------------- */
@@ -1140,7 +1232,7 @@ G.Factory = (function () {
     const bc = beltCell(cell.col, cell.row);
     if (bc && (bc.h || bc.v)) return bc.h || bc.v;
     // 집게 끝(○/▷)은 occ에 없으므로 별도 탐색
-    for (const b of S.buildings) if (b.type === 'grabber') {
+    for (const b of S.buildings) if (isGrabberType(b.type)) {
       const g = grabberRoles(b);
       if ([g.pickup, g.mid, g.drop].some(c => c.c === cell.col && c.r === cell.row)) return b;
     }
@@ -1195,7 +1287,7 @@ G.Factory = (function () {
         if (data.type === '점액덩어리' && accepts(def, data.type) && !dev.item) { dev.item = data; dev.washTimer = 0; dev.state = 'producing'; return true; }
         return addWorker(dev, data);
       case 'slaughter': case 'deshell':
-        if (accepts(def, data.type) && !dev.item && !(dev.outputs && dev.outputs.length)) { dev.item = data; dev.timer = 0; dev.state = 'producing'; return true; }
+        if (accepts(def, data.type) && !dev.item && !(dev.outputs && dev.outputs.length) && !(dev.sideOutputs && dev.sideOutputs.length)) { dev.item = data; dev.timer = 0; dev.state = 'producing'; return true; }
         return addWorker(dev, data);
       case 'correction':
         if (data.type === '사육실장' && !dev.teacher) { dev.teacher = data; return true; }
@@ -1213,13 +1305,21 @@ G.Factory = (function () {
         if (data.type === '운치' && (dev.unchiN || 0) < C.MIX_UNCHI) { dev.unchiN = (dev.unchiN || 0) + 1; return true; }
         return addWorker(dev, data);
       case 'cookery':
-        if (def.cook[data.type]) { if (!dev.mats) dev.mats = {}; dev.mats[data.type] = (dev.mats[data.type] || 0) + 1; return true; }
+        if (data.type === '조미료') { S.seasoning = (S.seasoning || 0) + 1; G.Assets.playSfx('click'); return true; }
+        if (def.cook[data.type]) {
+          if (!dev.mats) dev.mats = {};
+          if (!dev.matStats) dev.matStats = {};
+          if (!Array.isArray(dev.matStats[data.type])) dev.matStats[data.type] = [];
+          dev.mats[data.type] = (dev.mats[data.type] || 0) + 1;
+          dev.matStats[data.type].push(Object.assign({ 육질: 0, 개념: 0, 크기: 0 }, data.stats || {}));
+          return true;
+        }
         return addWorker(dev, data);
       case 'skewer':
         if (G.CREATURES[data.type] && !dev.held) { dev.held = data; dev.heldT = 0; return true; } // 실장석을 꽂음(고정)
         return false;
       case 'packer':
-        if (data.isProduct) { sellCargo(data); return true; }
+        if (canPackerSell(data)) { sellCargo(data); dev.state = 'producing'; dev.packT = 0.35; return true; }
         return false;
       case 'tunnel': case 'crossbelt':
         if (emitAtCell(transportEnds(dev).exit, data)) return true;
@@ -1342,7 +1442,7 @@ G.Factory = (function () {
     dropHoverId = null;
     if (dev) {
       const def = G.DEVICES[dev.type];
-      const ok = ['birthing', 'washbasin', 'slaughter', 'deshell', 'correction', 'mixer', 'cookery', 'grinder', 'warehouse', 'penbox', 'skewer'].includes(dev.type);
+      const ok = ['birthing', 'washbasin', 'slaughter', 'deshell', 'correction', 'mixer', 'cookery', 'grinder', 'warehouse', 'penbox', 'skewer', 'packer'].includes(dev.type);
       if (ok) dropHoverId = dev.id;
     }
   }
@@ -1358,6 +1458,7 @@ G.Factory = (function () {
     for (const cg of S.cargo) { if (cg === except) continue; if (Math.floor(cg.gx) === c && Math.floor(cg.gy) === r) n++; }
     return n;
   }
+  function isCellCargoEmpty(c, r, except) { return countCargoInCell(c, r, except) <= 0; }
   function isBeltLike(c, r) { return hasBelt(c, r); }
   function hasGuardBelt(c, r) {
     const bc = beltCell(c, r);
@@ -1391,14 +1492,14 @@ G.Factory = (function () {
       return false;
     }
     if (d.type === 'tunnel' || d.type === 'crossbelt') { const e = transportEnds(d); return (c === e.back.c && r === e.back.r && (d.queue ? d.queue.length : 0) < C.TUNNEL_CAP) ? 'transport' : false; }
-    if (d.type === 'packer') return data.isProduct ? 'pack' : false;
-    if (d.type === 'cookery') return def.cook[data.type] ? 'cook' : false;
+    if (d.type === 'packer') return canPackerSell(data) ? 'pack' : false;
+    if (d.type === 'cookery') return (def.cook[data.type] || data.type === '조미료') ? 'cook' : false;
     if (d.type === 'correction') {
       if (data.type === '사육실장' && !d.teacher) return 'teacher';
       return (accepts(def, data.type) && (d.inmates ? d.inmates.length : 0) < def.hold) ? 'correct' : false;
     }
     if (['slaughter', 'deshell', 'grinder'].includes(d.type)) {
-      if (accepts(def, data.type) && !d.item && !(d.outputs && d.outputs.length)) return 'process';
+      if (accepts(def, data.type) && !d.item && !(d.outputs && d.outputs.length) && !(d.sideOutputs && d.sideOutputs.length)) return 'process';
       return false;
     }
     return false;
@@ -1607,12 +1708,15 @@ G.Factory = (function () {
   }
 
   function sellCargo(data) {
-    const price = data.isProduct ? (data.price || 1) : 2;
+    const price = data.isProduct ? (data.price || 1) : (G.CREATURES[data.type] ? G.Creatures.priceOf(data.type, data.stats || {}) : 2);
     const type = data.type;
     S.sold[type] = (S.sold[type] || 0) + 1;
     S.money += price; S.soldValue += price;
     S.produceLog.push(performance.now());
     G.Assets.playSfx('sell');
+  }
+  function canPackerSell(data) {
+    return !!(data && (data.isProduct || data.type === '사육실장' || data.type === '새끼사육실장'));
   }
 
   function updateDevices(dt) {
@@ -1620,7 +1724,7 @@ G.Factory = (function () {
       if (b.speechT > 0) b.speechT -= dt;   // 장치 말풍선 시간 감소
       if (b.type === 'birthing') updateBirthing(b, dt);
       else if (b.type === 'washbasin') updateWashbasin(b, dt);
-      else if (b.type === 'grabber') updateGrabber(b, dt);
+      else if (isGrabberType(b.type)) updateGrabber(b, dt);
       else if (b.type === 'sorter') updateSorter(b, dt);
       else if (b.type === 'tunnel' || b.type === 'crossbelt') updateTunnel(b, dt);
       else if (b.type === 'mixer') updateMixer(b, dt);
@@ -1642,12 +1746,16 @@ G.Factory = (function () {
   function nurtureZone(b, dt, stats, chance) {
     eachInRange(b, c => {
       if (!c.stats) return;
-      if (Math.random() < chance * dt) { const s = stats[Math.floor(Math.random() * stats.length)]; c.stats[s] = Math.min(200, (c.stats[s] || 0) + 1); }
+        if (Math.random() < chance * dt) { const s = stats[Math.floor(Math.random() * stats.length)]; addStat(c.stats, s, 1); }
     });
   }
   function updateSpecial(b, dt) {
     const sp = G.DEVICES[b.type].special;
     if (sp === 'nurture') nurtureZone(b, dt, ['육질', '개념', '크기'], C.NURTURE_CHANCE);
+    else if (sp === 'pack') {
+      b.packT = Math.max(0, (b.packT || 0) - dt);
+      b.state = b.packT > 0 ? 'producing' : 'idle';
+    }
     else if (sp === 'skewer') {
       if (b.held) {
         b.heldT = (b.heldT || 0) + dt;
@@ -1658,8 +1766,8 @@ G.Factory = (function () {
           G.Assets.playSfx('remove');
           return;
         }
-        if (b.speechT <= 0 && Math.random() < dt * 0.7) { b.speech = '테겍 테겍'; b.speechT = 1.3; }
-        nurtureZone(b, dt, ['육질'], C.SKEWER_CHANCE);
+        if (b.speechT <= 0 && Math.random() < dt * 0.7) { b.speech = '테겍, 테겍!'; b.speechT = 1.3; }
+          nurtureZone(b, dt, ['개념'], C.SKEWER_CHANCE);
       }
     } else if (sp === 'catch') {
       b.cd = (b.cd || 0) + dt;
@@ -1729,6 +1837,15 @@ G.Factory = (function () {
     if (G.CREATURES[data.type]) { spawnWanderer(data, cell.c + 0.5, cell.r + 0.5); return true; }
     S.cargo.push(makeCargo(data, cell.c, cell.r)); return true;
   }
+  function detachCorrectionTeacher(b) {
+    if (!b || b.type !== 'correction' || !b.teacher) return false;
+    const teacher = b.teacher;
+    b.teacher = null;
+    const out = sideCell(b, b.dir);
+    if (!emitAtCell(out, teacher)) spawnWanderer(teacher, b.col + b.w / 2, b.row + b.h / 2);
+    G.Assets.playSfx('click');
+    return true;
+  }
   // 교정시설: 자실장 6마리 수용. 대사마다 육질-1/개념+1. 졸업(사육실장)/도축(실장육)/탈출.
   function updateCorrection(b, dt) {
     if (!b.inmates) b.inmates = [];
@@ -1754,7 +1871,7 @@ G.Factory = (function () {
         }
         const ls = G.LINES.correction; m.speech = ls[Math.floor(Math.random() * ls.length)]; m.speechT = 1.9;
         m.stats.육질 = Math.max(0, (m.stats.육질 || 0) - 1);
-        m.stats.개념 = Math.min(200, (m.stats.개념 || 0) + conceptGain);
+        addStat(m.stats, '개념', conceptGain);
         if (m.stats.육질 <= 0) m.meatReady = true;
         else if (m.stats.개념 >= CR.GRAD_CONCEPT && m.corrT >= CR.GRAD_TIME) { m.gradReady = true; m.gradType = (m.type === '성체실장') ? '사육실장' : '새끼사육실장'; }
       }
@@ -1789,9 +1906,10 @@ G.Factory = (function () {
   }
   function updateProcessor(b, dt) {
     const def = G.DEVICES[b.type];
-    if (b.outputs && b.outputs.length) {
+    if ((b.outputs && b.outputs.length) || (b.sideOutputs && b.sideOutputs.length)) {
       b.state = 'ready';
-      if (emitAtCell(outputCell(b), b.outputs[0])) b.outputs.shift();
+      if (b.outputs && b.outputs.length && emitAtCell(outputCell(b), b.outputs[0])) b.outputs.shift();
+      if (b.sideOutputs && b.sideOutputs.length && emitAtCell(slaughterBezoarCell(b), b.sideOutputs[0])) b.sideOutputs.shift();
       return;
     }
     if (b.type === 'grinder') {
@@ -1799,7 +1917,11 @@ G.Factory = (function () {
         b.state = 'producing'; b.timer += dt;
         // 가동 중 빨강+초록 파티클
         for (let k = 0; k < 3; k++) if (Math.random() < dt * 18) spawnParticle((b.col + Math.random() * b.w) * CELL, (b.row + Math.random() * b.h) * CELL, Math.random() < 0.5 ? '#e23a2a' : '#3ad24a');
-        if (b.timer >= def.time) { b.weight += (b.item.stats ? (b.item.stats.크기 || 0) : 0); b.item = null; b.timer = 0; b.state = 'ready'; }
+        if (b.timer >= def.time) {
+          if (b.item.type === '위석') b.outputs = Array.from({ length: 3 }, () => resourceCargoData('조미료'));
+          else b.weight += (b.item.stats ? (b.item.stats.크기 || 0) : 0);
+          b.item = null; b.timer = 0; b.state = 'ready';
+        }
       } else b.state = b.weight >= C.GRIND_TARGET ? 'ready' : 'idle';
       // 무게 100 이상 → 분쇄육(화물) 생산 (출구가 비어 있을 때)
       if (b.weight >= C.GRIND_TARGET) {
@@ -1825,10 +1947,16 @@ G.Factory = (function () {
       } else {
         // 생산품 출력 (도축기 등)
         const products = processorProducts(b, def);
+        if (b.type === 'slaughter') b.sideOutputs = [resourceCargoData('위석')];
         b.item = null; b.timer = 0; b.state = 'ready'; b.outputs = products;
         G.Assets.playSfx('sell');
       }
     }
+  }
+  function slaughterBezoarCell(b) {
+    const out = outputCell(b);
+    const side = DIR.vec[(b.dir + 1) % 4];
+    return { c: out.c + side.x, r: out.r + side.y };
   }
   function processorProducts(b, def) {
     if (b.type === 'slaughter') {
@@ -1861,6 +1989,23 @@ G.Factory = (function () {
   }
 
   // 조리실: 재료 N개 + 조미료 1 → 요리. 재료 종류에 따라 출력 화물이 다름.
+  function takeCookeryStats(b, mat, n) {
+    if (!b.matStats) b.matStats = {};
+    const list = Array.isArray(b.matStats[mat]) ? b.matStats[mat] : [];
+    const sum = { 육질: 0, 개념: 0, 크기: 0 };
+    for (let i = 0; i < n; i++) {
+      const stats = list[i] || {};
+      sum.육질 += stats.육질 || 0;
+      sum.개념 += stats.개념 || 0;
+      sum.크기 += stats.크기 || 0;
+    }
+    if (list.length) list.splice(0, n);
+    return {
+      육질: sum.육질 / n,
+      개념: sum.개념 / n,
+      크기: sum.크기 / n,
+    };
+  }
   function updateCookery(b, dt) {
     const def = G.DEVICES.cookery;
     if (!b.mats) b.mats = {};
@@ -1876,8 +2021,9 @@ G.Factory = (function () {
       if (b.timer >= def.time / workerMult(b)) {
         const out = outputCell(b);
         if (inGrid(out.c, out.r) && countCargoInCell(out.c, out.r) === 0) {
+          const stats = takeCookeryStats(b, b.cooking, r.n);
           b.mats[b.cooking] -= r.n; S.seasoning -= 1;
-          S.cargo.push(makeCargo(G.Creatures.makeProduct(r.out, { stats: { 육질: 0, 개념: 0, 크기: 0 } }), out.c, out.r));
+          S.cargo.push(makeCargo(G.Creatures.makeProduct(r.out, { stats }), out.c, out.r));
           b.cooking = null; b.timer = 0; b.state = 'ready'; G.Assets.playSfx('sell');
         }
       }
@@ -1915,21 +2061,34 @@ G.Factory = (function () {
     b.buffer = remaining;
   }
 
+  function canGrabberDrop(b) {
+    if (!b.holding) return false;
+    const drop = grabberRoles(b).drop;
+    if (!inGrid(drop.c, drop.r)) return false;
+    const dev = deviceAt(drop.c, drop.r);
+    if (!dev && isBeltLike(drop.c, drop.r)) return isCellCargoEmpty(drop.c, drop.r);
+    if (!dev && !isBeltLike(drop.c, drop.r)) return true;
+    return !!entryKind(drop.c, drop.r, { data: b.holding });
+  }
+  function tryDropFromGrabber(b) {
+    const drop = grabberRoles(b).drop;
+    const dev = deviceAt(drop.c, drop.r);
+    if (dev) return dropInto(dev, b.holding);
+    if (isBeltLike(drop.c, drop.r)) {
+      if (!isCellCargoEmpty(drop.c, drop.r)) return false;
+      S.cargo.push(makeCargo(b.holding, drop.c, drop.r));
+      return true;
+    }
+    if (G.CREATURES[b.holding.type]) spawnWanderer(b.holding, drop.c + 0.5, drop.r + 0.5);
+    else S.cargo.push(makeCargo(b.holding, drop.c, drop.r));
+    return true;
+  }
   function updateGrabber(b, dt) {
-    b.cd += dt;
+    b.cd = (b.cd || 0) + dt;
     if (b.cd < grabberInterval()) return;
     const roles = grabberRoles(b);
     if (b.holding) {
-      const drop = roles.drop;   // △ 위치
-      const dev = deviceAt(drop.c, drop.r);
-      if (dev) {
-        if (dropInto(dev, b.holding)) { b.holding = null; b.cd = 0; } // 장치가 받음 (못 받으면 대기)
-      } else if (isBeltLike(drop.c, drop.r)) {
-        if (countCargoInCell(drop.c, drop.r) < C.BELT_CAP) { S.cargo.push(makeCargo(b.holding, drop.c, drop.r)); b.holding = null; b.cd = 0; } // 벨트(가득이면 대기)
-      } else {
-        // △ 자리에 아무것도 없음 → 풀어줌(생물=배회, 생산품=바닥에 놓음)
-        if (G.CREATURES[b.holding.type]) spawnWanderer(b.holding, drop.c + 0.5, drop.r + 0.5);
-        else S.cargo.push(makeCargo(b.holding, drop.c, drop.r));
+      if (tryDropFromGrabber(b)) {
         b.holding = null; b.cd = 0;
       }
     } else {
@@ -1943,6 +2102,11 @@ G.Factory = (function () {
         let found = null;
         for (const cg of S.cargo) if (Math.floor(cg.gx) === pk.c && Math.floor(cg.gy) === pk.r && matchItem(b, cg.data)) { found = cg; break; }
         if (found) { b.holding = found.data; S.cargo = S.cargo.filter(x => x !== found); b.cd = 0; }
+        else {
+          let wander = null;
+          for (const w of S.wanderers) if (Math.floor(w.gx) === pk.c && Math.floor(w.gy) === pk.r && matchItem(b, w.data)) { wander = w; break; }
+          if (wander) { b.holding = wander.data; S.wanderers = S.wanderers.filter(x => x !== wander); b.cd = 0; }
+        }
       }
     }
   }
@@ -1969,7 +2133,20 @@ G.Factory = (function () {
       if (k === 'r' || k === 'R') {
         closeAuxPanels();
         if (currentTool && G.DEVICES[currentTool].rotatable) { ghostDir = (ghostDir + 1) % 4; G.Assets.playSfx('rotate'); }
-        else if (moveMode) { moving.forEach(m => { if (G.DEVICES[m.b.type].rotatable) { m.b.dir = (m.b.dir + 1) % 4; const fp = footprint(m.b.type, m.b.col, m.b.row, m.b.dir); m.b.w = fp.w; m.b.h = fp.h; } }); G.Assets.playSfx('rotate'); }
+        else if (moveMode) {
+          moving.forEach(m => {
+            if (G.DEVICES[m.b.type].rotatable) {
+              const center = isGrabberType(m.b.type) ? grabberRoles(m.b).mid : null;
+              m.b.dir = (m.b.dir + 1) % 4;
+              if (isGrabberType(m.b.type)) {
+                const o = centeredOriginFor(m.b.type, center, m.b.dir);
+                m.b.col = o.col; m.b.row = o.row;
+              }
+              const fp = footprint(m.b.type, m.b.col, m.b.row, m.b.dir); m.b.w = fp.w; m.b.h = fp.h;
+            }
+          });
+          G.Assets.playSfx('rotate');
+        }
         else if (hoverBuilding) rotateBuilding(hoverBuilding);  // 호버 중 R로 회전
       } else if (k === 'Escape') {
         closeAuxPanels();
@@ -2176,27 +2353,46 @@ G.Factory = (function () {
   }
 
   // 캔버스 위 생물(화물/배회/우리 안) 히트테스트 → {data, remove(), fgx,fgy}
+  function creatureVisualRect(type, fx, fy) {
+    const scale = (C.DISPLAY_SCALE && C.DISPLAY_SCALE[type]) || 1;
+    const rec = G.Assets.creatureImg(type);
+    let dw = 0.62 * scale, dh = 0.82 * scale;
+    if (rec && rec.ok && rec.img.width) {
+      dw = (rec.img.width / 4) * scale / CELL;
+      dh = (rec.img.height / 4) * scale / CELL;
+    }
+    return { x0: fx - dw / 2, x1: fx + dw / 2, y0: fy - dh, y1: fy };
+  }
+  function hitCreatureSprite(type, fx, fy, gx, gy) {
+    const r = creatureVisualRect(type, fx, fy);
+    if (gx < r.x0 || gx > r.x1 || gy < r.y0 || gy > r.y1) return null;
+    const cx = (r.x0 + r.x1) / 2, cy = (r.y0 + r.y1) / 2;
+    return Math.hypot(cx - gx, cy - gy);
+  }
   function creatureAtClient(cx, cy) {
     const w = screenToWorld(cx, cy); if (!w) return null;
     const gx = w.wx, gy = w.wy;
-    let best = null, bd = 0.5;
+    let best = null, bd = Infinity;
     // 우리 안 생물
     for (const pen of S.buildings) {
       if (pen.type !== 'penbox') continue;
       for (const c of pen.creatures) {
         const wx = pen.col + (c.px || 0.5), wy = pen.row + (c.py || 0.5);
-        const d = Math.hypot(wx - gx, wy - gy);
+        const d = hitCreatureSprite(c.type, wx, wy, gx, gy);
+        if (d == null) continue;
         if (d < bd) { bd = d; best = { data: c, pen, fgx: wx, fgy: wy, remove: () => { const i = pen.creatures.indexOf(c); if (i >= 0) pen.creatures.splice(i, 1); } }; }
       }
     }
     for (const w of S.wanderers) {
       if (!G.CREATURES[w.data.type] || !isOwnedCell(Math.floor(w.gx), Math.floor(w.gy))) continue;
-      const d = Math.hypot(w.gx - gx, w.gy - gy);
+      const d = hitCreatureSprite(w.data.type, w.gx, w.gy, gx, gy);
+      if (d == null) continue;
       if (d < bd) { bd = d; best = { data: w.data, fgx: w.gx, fgy: w.gy, remove: () => { S.wanderers = S.wanderers.filter(x => x !== w); } }; }
     }
     for (const cg of S.cargo) {
       if (!G.CREATURES[cg.data.type] || !isOwnedCell(Math.floor(cg.gx), Math.floor(cg.gy))) continue;
-      const d = Math.hypot(cg.gx - gx, cg.gy - gy);
+      const d = hitCreatureSprite(cg.data.type, cg.gx, cg.gy, gx, gy);
+      if (d == null) continue;
       if (d < bd) { bd = d; best = { data: cg.data, fgx: cg.gx, fgy: cg.gy, remove: () => { S.cargo = S.cargo.filter(x => x !== cg); } }; }
     }
     return best;
@@ -2334,16 +2530,17 @@ G.Factory = (function () {
     const vis = (b) => !(b.col > vx1 || b.col + b.w < vx0 || b.row > vy1 || b.row + b.h < vy0);
     drawStains();
     for (const b of S.buildings) if ((b.type === 'belt' || b.type === 'guardbelt') && vis(b)) drawBelt(b);
-    for (const b of S.buildings) if (b.type !== 'belt' && b.type !== 'guardbelt' && b.type !== 'grabber' && vis(b)) drawDevice(b);
-    for (const b of S.buildings) if (b.type === 'grabber' && vis(b)) drawGrabber(b);
+    for (const b of S.buildings) if (b.type !== 'belt' && b.type !== 'guardbelt' && !isGrabberType(b.type) && vis(b)) drawDevice(b);
     // 바닥 위 개체(화물+배회): y 큰(아래) 쪽을 나중에 그림(입체감)
     const floor = [];
     for (const cg of S.cargo) if (cg.gx > vx0 - 1 && cg.gx < vx1 + 1 && cg.gy > vy0 - 1 && cg.gy < vy1 + 1) floor.push({ y: cg.gy, d: drawCargo, a: cg });
     for (const w of S.wanderers) if (w.gx > vx0 - 1 && w.gx < vx1 + 1 && w.gy > vy0 - 1 && w.gy < vy1 + 1) floor.push({ y: w.gy, d: drawWanderer, a: w });
     floor.sort((p, q) => p.y - q.y);
     for (const f of floor) f.d(f.a);
+    for (const b of S.buildings) if (b.type === 'penbox' && vis(b)) drawPenForeground(b);
     drawParticles();
     drawWalls();
+    for (const b of S.buildings) if (isGrabberType(b.type) && vis(b)) drawGrabber(b);
     drawSelection();
     drawGhost();
     drawMoveGhost();
@@ -2444,7 +2641,7 @@ G.Factory = (function () {
     if (b.type === 'tunnel' || b.type === 'crossbelt') { drawTransport(b); return; }
     const x = b.col * CELL, y = b.row * CELL, w = b.w * CELL, h = b.h * CELL;
     const def = G.DEVICES[b.type];
-    const frameIdx = (def && def.cat === 'processing' && !isDeviceAnimating(b)) ? 0 : null;
+    const frameIdx = (def && (def.cat === 'processing' || b.type === 'packer') && !isDeviceAnimating(b)) ? 0 : null;
     // 우리(penbox)는 9분할 울타리(아래 drawPen). 출산대는 장착 여부에 따라 birthing_ready/birthing.
     let drawn = false;
     if (b.type === 'penbox') drawn = true;
@@ -2474,6 +2671,7 @@ G.Factory = (function () {
       // 장착 실장석은 표시하지 않음(birthing/birthing_ready 스프라이트로 상태 구분)
     } else if (['slaughter', 'deshell'].includes(b.type)) {
       markEdge(outputCell(b), '출', '#fc5');
+      if (b.type === 'slaughter') markEdge(slaughterBezoarCell(b), '위석', '#8df');
       drawProgressBar(x, y + h - 6, w, b.item ? b.timer / (def.time / workerMult(b)) : 0, b.state);
       drawItem(b, x, y); drawWorkerSlots(b, x, y, w);
     } else if (b.type === 'correction') {
@@ -2541,6 +2739,7 @@ G.Factory = (function () {
   }
   function isDeviceAnimating(b) {
     if (b.state === 'producing') return true;
+    if (b.type === 'packer') return (b.packT || 0) > 0;
     if (b.type === 'washbasin') return !!b.item;
     if (b.type === 'grinder') return !!b.item;
     if (b.type === 'mixer') return !!(b.slotMeat && (b.unchiN || 0) >= C.MIX_UNCHI);
@@ -2649,27 +2848,41 @@ G.Factory = (function () {
     ctx.fillStyle = color; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
     ctx.fillText(label, x + 4, y + 3);
   }
-  // 우리 울타리: 144x144 png를 48x48 9분할(모서리/변/중앙)해 칸마다 타일 배치(무애니)
-  function drawPenFence(b, x, y, w, h) {
+  function drawPenTileBase(b) {
+    const rec = G.Assets.loadImage('assets/images/devices/penbox_tile.png');
+    for (const cell of penRelCells(b)) {
+      const x = (b.col + cell.c) * CELL, y = (b.row + cell.r) * CELL;
+      if (rec && rec.ok && rec.img.width) ctx.drawImage(rec.img, x, y, CELL, CELL);
+      else { ctx.fillStyle = 'rgba(74,106,58,0.16)'; ctx.fillRect(x, y, CELL, CELL); }
+    }
+  }
+  // 우리 울타리: penbox.png를 48x48 타일셋처럼 사용. 비정형 모양은 인접 셀 기준으로 가장 맞는 조각을 고름.
+  function drawPenFenceLayer(b, onlyBottom) {
     const rec = G.Assets.deviceImg('penbox');
     if (rec && rec.ok && rec.img.width) {
       const aw = rec.img.width / 3, ah = rec.img.height / 3;
-      for (let rr = 0; rr < b.h; rr++) for (let cc = 0; cc < b.w; cc++) {
-        const ac = (b.w === 1) ? 1 : (cc === 0 ? 0 : cc === b.w - 1 ? 2 : 1);
-        const ar = (b.h === 1) ? 1 : (rr === 0 ? 0 : rr === b.h - 1 ? 2 : 1);
-        ctx.drawImage(rec.img, ac * aw, ar * ah, aw, ah, (b.col + cc) * CELL, (b.row + rr) * CELL, CELL, CELL);
+      for (const cell of penRelCells(b)) {
+        const left = penHasRel(b, cell.c - 1, cell.r), right = penHasRel(b, cell.c + 1, cell.r);
+        const up = penHasRel(b, cell.c, cell.r - 1), down = penHasRel(b, cell.c, cell.r + 1);
+        if (onlyBottom && down) continue;
+        const ac = !left && right ? 0 : (left && !right ? 2 : 1);
+        const ar = !up && down ? 0 : (up && !down ? 2 : 1);
+        ctx.drawImage(rec.img, ac * aw, ar * ah, aw, ah, (b.col + cell.c) * CELL, (b.row + cell.r) * CELL, CELL, CELL);
       }
     } else {
-      // 플레이스홀더: 울타리 느낌(반투명 채움 + 칸 격자 기둥)
-      ctx.fillStyle = 'rgba(74,106,58,0.16)'; ctx.fillRect(x, y, w, h);
-      ctx.strokeStyle = '#7aa055'; ctx.lineWidth = 2.5; ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
-      ctx.strokeStyle = 'rgba(150,190,120,0.35)'; ctx.lineWidth = 1;
-      for (let cc = 1; cc < b.w; cc++) { ctx.beginPath(); ctx.moveTo((b.col + cc) * CELL, y); ctx.lineTo((b.col + cc) * CELL, y + h); ctx.stroke(); }
-      for (let rr = 1; rr < b.h; rr++) { ctx.beginPath(); ctx.moveTo(x, (b.row + rr) * CELL); ctx.lineTo(x + w, (b.row + rr) * CELL); ctx.stroke(); }
+      ctx.strokeStyle = '#7aa055'; ctx.lineWidth = 2.5;
+      for (const cell of penRelCells(b)) {
+        const down = penHasRel(b, cell.c, cell.r + 1);
+        if (onlyBottom && down) continue;
+        const x = (b.col + cell.c) * CELL, y = (b.row + cell.r) * CELL;
+        ctx.strokeRect(x + 1, y + 1, CELL - 2, CELL - 2);
+      }
     }
   }
+  function drawPenForeground(b) { drawPenFenceLayer(b, true); }
   function drawPen(b, x, y, w, h) {
-    drawPenFence(b, x, y, w, h);
+    drawPenTileBase(b);
+    drawPenFenceLayer(b, false);
     ctx.fillStyle = 'rgba(0,0,0,0.32)'; ctx.fillRect(x + 1, y + 1, w - 2, 15);
     ctx.fillStyle = '#cfe'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
     ctx.fillText(b.name || '우리', x + 4, y + 3);
@@ -2697,23 +2910,36 @@ G.Factory = (function () {
       if (m.speechT > 0 && m.speech) drawBubble(cx, cy - 8, m.speech);
     }
   }
+  function creatureFootSprite(type, fx, fy, dirRowIdx) {
+    const scale = (C.DISPLAY_SCALE && C.DISPLAY_SCALE[type]) || 1;
+    const fallback = 24 * scale;
+    const rec = G.Assets.creatureImg(type);
+    if (rec && rec.ok && rec.img.width) {
+      const cw = rec.img.width / 4, ch = rec.img.height / 4;
+      const dw = cw * scale, dh = ch * scale;
+      ctx.drawImage(rec.img, G.Assets.frame() * cw, (dirRowIdx || 0) * ch, cw, ch, Math.round(fx - dw / 2), Math.round(fy - dh), dw, dh);
+      return { drawn: true, cx: fx, cy: fy - dh / 2, top: fy - dh, bottom: fy, size: Math.max(dw, dh) };
+    }
+    return { drawn: false, cx: fx, cy: fy - fallback / 2, top: fy - fallback, bottom: fy, size: fallback };
+  }
   function drawPennedCreature(cx, cy, c) {
     const sz = 18 * ((C.DISPLAY_SCALE && C.DISPLAY_SCALE[c.type]) || 1), def = G.CREATURES[c.type];
     let vx = c.pvx || 0, vy = c.pvy || 0; if (c.flee && c.flee.t > 0) { vx = c.flee.vx; vy = c.flee.vy; }
-    if (!G.Assets.drawCreatureNative(ctx, c.type, cx, cy, G.Assets.dirRow(vx, vy))) {  // 원본크기
-      ctx.fillStyle = def ? def.color : '#fff'; ctx.beginPath(); ctx.arc(cx, cy, sz / 2, 0, Math.PI * 2); ctx.fill();
+    const m = creatureFootSprite(c.type, cx, cy, G.Assets.dirRow(vx, vy));
+    if (!m.drawn) {
+      ctx.fillStyle = def ? def.color : '#fff'; ctx.beginPath(); ctx.arc(m.cx, m.cy, sz / 2, 0, Math.PI * 2); ctx.fill();
     }
-    const g = G.Creatures.gradeOfStats(c.stats); ctx.fillStyle = g.color; ctx.beginPath(); ctx.arc(cx + 7, cy - 6, 3, 0, Math.PI * 2); ctx.fill();
+    const g = G.Creatures.gradeOfStats(c.stats); ctx.fillStyle = g.color; ctx.beginPath(); ctx.arc(m.cx + 7, m.cy - 6, 3, 0, Math.PI * 2); ctx.fill();
     // 하단 스탯 표시 (육질/개념/크기)
     if (c.stats) {
-      const sy = cy + sz / 2 + 1;
-      ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(cx - 16, sy, 32, 9);
+      const sy = m.bottom + 1;
+      ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(m.cx - 16, sy, 32, 9);
       ctx.fillStyle = '#fff'; ctx.font = '7px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText(Math.floor(c.stats.육질 || 0) + '/' + Math.floor(c.stats.개념 || 0) + '/' + Math.floor(c.stats.크기 || 0), cx, sy + 4.5);
+      ctx.fillText(Math.floor(c.stats.육질 || 0) + '/' + Math.floor(c.stats.개념 || 0) + '/' + Math.floor(c.stats.크기 || 0), m.cx, sy + 4.5);
     }
-    if (c.scream > 0) { ctx.fillStyle = '#ff5a5a'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic'; ctx.fillText('데챠앗!', cx, cy - 11); }
-    else if (c.flee && c.flee.t > 0) { ctx.fillStyle = '#fff'; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic'; ctx.fillText('테챠아!', cx, cy - 11); }
-    else if (c.speechT > 0 && c.speech) drawBubble(cx, cy - 12, c.speech);
+    if (c.scream > 0) { ctx.fillStyle = '#ff5a5a'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic'; ctx.fillText('데챠앗!', m.cx, m.top - 2); }
+    else if (c.flee && c.flee.t > 0) { ctx.fillStyle = '#fff'; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic'; ctx.fillText('테챠아!', m.cx, m.top - 2); }
+    else if (c.speechT > 0 && c.speech) drawBubble(m.cx, m.top - 2, c.speech);
   }
 
   function inoutBadge(cell, label, color) {
@@ -2721,32 +2947,68 @@ G.Factory = (function () {
     ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(x + 1, y + 1, 16, 12);
     ctx.fillStyle = color; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillText(label, x + 3, y + 2);
   }
+  function grabberHeldPoint(b) {
+    const roles = grabberRoles(b);
+    const interval = Math.max(0.001, grabberInterval());
+    let t = clamp((b.cd || 0) / interval, 0, 1);
+    if (!canGrabberDrop(b)) t = Math.min(t, 2 / 3);
+    const sx = roles.pickup.c + 0.5, sy = roles.pickup.r + 0.5;
+    const ex = roles.drop.c + 0.5, ey = roles.drop.r + 0.5;
+    return { x: (sx + (ex - sx) * t) * CELL, y: (sy + (ey - sy) * t) * CELL };
+  }
+  function grabberHeadPoint(b) {
+    if (b.holding) return grabberHeldPoint(b);
+    const mid = grabberRoles(b).mid;
+    return { x: mid.c * CELL + CELL / 2, y: mid.r * CELL + CELL / 2 };
+  }
+  function drawGrabberHeadStatic() {
+    const rec = G.Assets.loadImage('assets/images/devices/grabber.png');
+    if (!rec || !rec.ok || !rec.img.width) return false;
+    let sw = rec.img.width, sh = rec.img.height;
+    if (rec.img.width >= rec.img.height * 4) sw = rec.img.width / 4;
+    ctx.drawImage(rec.img, 0, 0, sw, sh, -CELL / 2, -CELL / 2, CELL, CELL);
+    return true;
+  }
   function drawGrabber(b) {
     const roles = grabberRoles(b);
     const cx = roles.mid.c * CELL + CELL / 2, cy = roles.mid.r * CELL + CELL / 2;
-    // 그래픽은 1x3 (가로 4프레임 시트) — 동쪽(→)기준 스프라이트를 방향에 맞게 회전(원본 비율 유지)
-    // 화물을 옮기는 중(holding)에만 애니메이션, 대기 상태면 0프레임 고정
+    const def = G.DEVICES[b.type] || G.DEVICES.grabber;
+    const span = Math.max(def.w || 3, def.h || 1);
+    // 레일은 바닥에 고정, 헤드(grabber)는 중앙/화물 위치를 따라 움직임.
     ctx.save(); ctx.translate(cx, cy); ctx.rotate((b.dir - 1) * Math.PI / 2);
-    const ok = G.Assets.drawDeviceFit(ctx, 'grabber', 0, 0, 3 * CELL, b.holding ? null : 0);
+    const railOk = G.Assets.drawDeviceSpriteNamed(ctx, 'grabber_rail.png', -span * CELL / 2, -CELL / 2, span * CELL, CELL, 0);
     ctx.restore();
-    if (!ok) {  // 플레이스홀더: 3칸 □·△
-      [roles.pickup, roles.mid, roles.drop].forEach((cell, i) => {
+    if (!railOk) {  // 플레이스홀더: □·△
+      footprint(b.type, b.col, b.row, b.dir).cells.forEach((cell) => {
         const x = cell.c * CELL, y = cell.r * CELL;
-        ctx.save(); ctx.globalAlpha = (i === 1) ? 0.95 : 0.7; ctx.fillStyle = G.DEVICES.grabber.color;
-        if (i === 1) ctx.fillRect(x + 6, y + 6, CELL - 12, CELL - 12);
+        const label = (cell.c === roles.pickup.c && cell.r === roles.pickup.r) ? '□' : ((cell.c === roles.drop.c && cell.r === roles.drop.r) ? '△' : ((cell.c === roles.mid.c && cell.r === roles.mid.r) ? '·' : ''));
+        ctx.save(); ctx.globalAlpha = (cell.c === roles.mid.c && cell.r === roles.mid.r) ? 0.95 : 0.7; ctx.fillStyle = def.color;
+        if (cell.c === roles.mid.c && cell.r === roles.mid.r) ctx.fillRect(x + 6, y + 6, CELL - 12, CELL - 12);
         ctx.globalAlpha = 1; ctx.fillStyle = '#ffd9a0'; ctx.font = 'bold 18px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText(i === 0 ? '□' : (i === 1 ? '·' : '△'), x + CELL / 2, y + CELL / 2); ctx.restore();
+        if (label) ctx.fillText(label, x + CELL / 2, y + CELL / 2); ctx.restore();
       });
     }
     // 출 위치 표시
     inoutBadge(roles.drop, '출', '#fc5');
+    const head = grabberHeadPoint(b);
     if (b.holding) {
       const isCre = G.CREATURES[b.holding.type];
-      const drawn = isCre ? G.Assets.drawCreatureNative(ctx, b.holding.type, cx, cy, 0) : G.Assets.drawProductImage(ctx, b.holding.type, cx, cy, 30);
+      const cm = isCre ? creatureFootSprite(b.holding.type, head.x, head.y, 0) : null;
+      const drawn = isCre ? cm.drawn : G.Assets.drawProductImage(ctx, b.holding.type, head.x, head.y, 30);
       if (!drawn) {
         const def = isCre || G.PRODUCTS[b.holding.type];
-        ctx.fillStyle = def ? def.color : '#fff'; ctx.beginPath(); ctx.arc(cx, cy, 8, 0, Math.PI * 2); ctx.fill();
+        const cy = isCre && cm ? cm.cy : head.y;
+        ctx.fillStyle = def ? def.color : '#fff'; ctx.beginPath(); ctx.arc(head.x, cy, 8, 0, Math.PI * 2); ctx.fill();
       }
+    }
+    ctx.save();
+    ctx.translate(head.x, head.y);
+    ctx.rotate((b.dir - 1) * Math.PI / 2);
+    const headOk = drawGrabberHeadStatic();
+    ctx.restore();
+    if (!headOk) {
+      ctx.fillStyle = def.color; ctx.beginPath(); ctx.arc(head.x, head.y, 12, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#ffd9a0'; ctx.font = 'bold 13px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('집게', head.x, head.y);
     }
   }
 
@@ -2755,13 +3017,14 @@ G.Factory = (function () {
     const def = G.CREATURES[cg.data.type];   // 생물이면 def 존재
     if (def) {
       const v = DIR.vec[cg.dir] || { x: 1, y: 0 };
-      if (!G.Assets.drawCreatureNative(ctx, cg.data.type, x, y, G.Assets.dirRow(v.x, v.y))) {  // 원본크기
+      const m = creatureFootSprite(cg.data.type, x, y, G.Assets.dirRow(v.x, v.y));
+      if (!m.drawn) {
         const bob = (G.Assets.frame() % 2) ? -2 : 0;
-        ctx.fillStyle = def.color; ctx.beginPath(); ctx.arc(x, y + bob, sz / 2, 0, Math.PI * 2); ctx.fill();
-        ctx.fillStyle = 'rgba(0,0,0,0.65)'; ctx.font = '9px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(def.label, x, y + bob);
+        ctx.fillStyle = def.color; ctx.beginPath(); ctx.arc(m.cx, m.cy + bob, sz / 2, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = 'rgba(0,0,0,0.65)'; ctx.font = '9px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(def.label, m.cx, m.cy + bob);
       }
-      drawCreatureBadge(x, y, cg.data);
-      if (cg.data.speechT > 0 && cg.data.speech) drawBubble(x, y - 24, cg.data.speech);
+      drawCreatureBadge(m.cx, m.cy, cg.data);
+      if (cg.data.speechT > 0 && cg.data.speech) drawBubble(m.cx, m.top - 2, cg.data.speech);
     } else {  // 생산품/자원(실장육·분쇄육·요리·실장푸드·운치) — 아이콘=맵 그래픽(무애니)
       if (!G.Assets.drawProductImage(ctx, cg.data.type, x, y, 34)) {
         const pd = G.PRODUCTS[cg.data.type];
@@ -2775,13 +3038,14 @@ G.Factory = (function () {
   function drawWanderer(w) {
     const x = w.gx * CELL, y = w.gy * CELL, sz = 24 * ((C.DISPLAY_SCALE && C.DISPLAY_SCALE[w.data.type]) || 1);
     const def = G.CREATURES[w.data.type];
-    if (!G.Assets.drawCreatureNative(ctx, w.data.type, x, y, G.Assets.dirRow(w.vx, w.vy))) {  // 원본크기
-      ctx.fillStyle = def ? def.color : '#fff'; ctx.beginPath(); ctx.arc(x, y, sz / 2, 0, Math.PI * 2); ctx.fill();
+    const m = creatureFootSprite(w.data.type, x, y, G.Assets.dirRow(w.vx, w.vy));
+    if (!m.drawn) {
+      ctx.fillStyle = def ? def.color : '#fff'; ctx.beginPath(); ctx.arc(m.cx, m.cy, sz / 2, 0, Math.PI * 2); ctx.fill();
     }
     ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.setLineDash([3, 3]); ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.arc(x, y, sz / 2 + 2, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
-    drawCreatureBadge(x, y, w.data);
-    if (w.data.speechT > 0 && w.data.speech) drawBubble(x, y - 24, w.data.speech);
+    ctx.beginPath(); ctx.arc(x, y, Math.max(5, sz / 3), 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+    drawCreatureBadge(m.cx, m.cy, w.data);
+    if (w.data.speechT > 0 && w.data.speech) drawBubble(m.cx, m.top - 2, w.data.speech);
   }
 
   // 스프라이트 위 등급 + 스탯 표기
@@ -2849,10 +3113,10 @@ G.Factory = (function () {
     if (!pasteClip || !mouseCell) return;
     for (const it of pasteClip) {
       const col = mouseCell.col + it.dc, row = mouseCell.row + it.dr;
-      const fp = (it.type === 'penbox') ? { w: it.w, h: it.h } : footprint(it.type, col, row, it.dir);
-      for (let rr = 0; rr < fp.h; rr++) for (let cc = 0; cc < fp.w; cc++) {
-        const x = (col + cc) * CELL, y = (row + rr) * CELL;
-        const ok = isOwnedCell(col + cc, row + rr);
+      const cells = (it.type === 'penbox' && it.cells) ? it.cells.map(cell => ({ c: col + cell.c, r: row + cell.r })) : footprint(it.type, col, row, it.dir).cells;
+      for (const cell of cells) {
+        const x = cell.c * CELL, y = cell.r * CELL;
+        const ok = isOwnedCell(cell.c, cell.r);
         ctx.fillStyle = ok ? 'rgba(120,200,255,0.32)' : 'rgba(230,90,90,0.32)';
         ctx.fillRect(x + 2, y + 2, CELL - 4, CELL - 4);
       }
@@ -2882,13 +3146,18 @@ G.Factory = (function () {
       w = Math.abs(end.col - penDragStart.col) + 1; h = Math.abs(end.row - penDragStart.row) + 1;
     } else { col = mouseCell.col; row = mouseCell.row; w = 1; h = 1; }
     let ok = true;
-    for (let dr = 0; dr < h; dr++) for (let dc = 0; dc < w; dc++) { if (!isOwnedCell(col + dc, row + dr) || occAt(col + dc, row + dr) || hasBelt(col + dc, row + dr)) ok = false; }
+    const existing = penDragStart ? deviceAt(penDragStart.col, penDragStart.row) : null;
+    for (let dr = 0; dr < h; dr++) for (let dc = 0; dc < w; dc++) {
+      const c = col + dc, r = row + dr;
+      const ownedByExisting = existing && existing.type === 'penbox' && penAbsCells(existing).some(pc => pc.c === c && pc.r === r);
+      if (!isOwnedCell(c, r) || (!ownedByExisting && occAt(c, r)) || hasBelt(c, r)) ok = false;
+    }
     ctx.fillStyle = ok ? 'rgba(120,220,160,0.3)' : 'rgba(230,90,90,0.3)';
     ctx.fillRect(col * CELL + 2, row * CELL + 2, w * CELL - 4, h * CELL - 4);
     ctx.strokeStyle = ok ? '#8fd' : '#f88'; ctx.lineWidth = 2;
     ctx.strokeRect(col * CELL + 2, row * CELL + 2, w * CELL - 4, h * CELL - 4);
     ctx.fillStyle = '#fff'; ctx.font = '11px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText('우리 ' + w + '×' + h + ' (성체' + (w * h * C.PEN_ADULT_PER_CELL) + '/새끼' + (w * h * C.PEN_YOUNG_PER_CELL) + ')', col * CELL + w * CELL / 2, row * CELL + h * CELL / 2);
+    ctx.fillText('우리 +' + (w * h) + '칸 (성체' + (w * h * C.PEN_ADULT_PER_CELL) + '/새끼' + (w * h * C.PEN_YOUNG_PER_CELL) + ')', col * CELL + w * CELL / 2, row * CELL + h * CELL / 2);
   }
   function drawBeltGhostPath() {
     const beltType = currentTool === 'guardbelt' ? 'guardbelt' : 'belt';
@@ -2920,9 +3189,10 @@ G.Factory = (function () {
       drawSkewerDevice({ type: 'skewer', held: null }, col * CELL, row * CELL);
       ctx.restore();
     }
-    if (type === 'grabber') {
-      const roles = grabberRoles({ col, row, dir });
+    if (isGrabberType(type)) {
+      const roles = grabberRoles({ type, col, row, dir });
       gLabel(roles.pickup, '입□'); gLabel(roles.mid, '·'); gLabel(roles.drop, '출△');
+      drawArrow(roles.mid.c * CELL + CELL / 2, roles.mid.r * CELL + CELL / 2, dir, ok ? '#cff' : '#fcc');
     } else if (G.DEVICES[type].rotatable) {
       drawArrow((col + fp.w / 2) * CELL, (row + fp.h / 2) * CELL, dir, ok ? '#cff' : '#fcc');
     }
@@ -2935,13 +3205,14 @@ G.Factory = (function () {
     const b = { type, col, row, dir, w: fp.w, h: fp.h };
     if (type === 'penbox' || type === 'warehouse' || type === 'wall' || type === 'packer') return;
     if (type === 'tunnel' || type === 'crossbelt') { drawGhostOutputCell(transportEnds(b).exit, '출'); return; }
-    if (type === 'grabber') { drawGhostOutputCell(grabberRoles(b).drop, '출'); return; }
+    if (isGrabberType(type)) { drawGhostOutputCell(grabberRoles(b).drop, '출'); return; }
     if (type === 'sorter') { laneInfo(b).forEach(ln => drawGhostOutputCell(ln.out, '출')); return; }
     if (type === 'correction') {
       drawGhostOutputCell(sideCell(b, dir), '사육출');
       drawGhostOutputCell(sideCell(b, (dir + 2) % 4), '육출');
       return;
     }
+    if (type === 'slaughter') drawGhostOutputCell(slaughterBezoarCell(b), '위석');
     if (type === 'speaker' || type === 'pointer' || type === 'skewer' || type === 'feeder') return;
     drawGhostOutputCell(outputCell(b), '출');
   }
@@ -2966,7 +3237,7 @@ G.Factory = (function () {
     if (!moveMode || !mouseCell) return;
     for (const m of moving) {
       const col = mouseCell.col + m.offC, row = mouseCell.row + m.offR;
-      const fp = m.b.type === 'penbox' ? { cells: Array.from({ length: m.b.w * m.b.h }, (_, i) => ({ c: col + (i % m.b.w), r: row + Math.floor(i / m.b.w) })) } : footprint(m.b.type, col, row, m.b.dir);
+      const fp = m.b.type === 'penbox' ? { cells: penAbsCells(m.b, col, row) } : footprint(m.b.type, col, row, m.b.dir);
       const ok = canPlaceMoved(m.b, col, row);
       for (const cell of fp.cells) {
         const x = cell.c * CELL, y = cell.r * CELL;
@@ -2976,5 +3247,5 @@ G.Factory = (function () {
     }
   }
 
-  return { init, update, render, reloadState, screenToCell, tryLoadCreature, hoverDropTarget, clearDropHover, sellAllWarehouse, sellSomeType, sellPenCreatures, spawnWanderer, dropToFactory, burstAt, stainAt, feedZoneMult };
+  return { init, update, render, reloadState, screenToCell, tryLoadCreature, hoverDropTarget, clearDropHover, sellAllWarehouse, sellSomeType, sellPenCreatures, spawnWanderer, dropToFactory, burstAt, stainAt, feedZoneMult, exportRuntimeState, importRuntimeState };
 })();
