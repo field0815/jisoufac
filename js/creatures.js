@@ -9,86 +9,169 @@ G.Creatures = (function () {
   const ri = (a, b) => Math.floor(rnd(a, b + 1));
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const statMax = () => C.STAT_MAX || 200;
-  const sizeMax = () => C.SIZE_MAX || 100;
+  const sizeMax = () => C.SIZE_MAX || 50;
+  function bornQuality(v) { return clamp(Math.max(10, Math.round(v || 0)), 1, statMax()); }
+  function sizeRange(type) {
+    return (C.SIZE_BIRTH_RANGE && C.SIZE_BIRTH_RANGE[type]) || [1, sizeMax()];
+  }
+  function newSize(type) {
+    const r = sizeRange(type);
+    return clamp(ri(r[0], r[1]), 1, sizeMax());
+  }
+  function stageMin(type) {
+    const r = sizeRange(type);
+    return r[0] || 1;
+  }
+  function normalizeSize(creature) {
+    if (!creature || !creature.stats) return;
+    creature.stats.크기 = clamp(Math.floor(creature.stats.크기 || 1), 1, sizeMax());
+  }
+
+  // 체력/행복 바이탈: 최대 체력 = 크기(×hpScale, 침입 레이드 보정용), 행복 0~100
+  const happyMax = () => C.CREATURE_HAPPY_MAX || 100;
+  function hpMaxOf(data) {
+    const sz = (data && data.stats && data.stats.크기) || 1;
+    return Math.max(1, Math.floor(sz * (data && data.hpScale ? data.hpScale : 1)));
+  }
+  function ensureVitals(data) {
+    if (!data) return data;
+    const hm = hpMaxOf(data);
+    data.hp = (data.hp == null) ? hm : clamp(data.hp, 0, hm);
+    data.행복 = (data.행복 == null) ? happyMax() : clamp(data.행복, 0, happyMax());
+    return data;
+  }
+  // 행복 증감. 행복이 0이 되면 '행복회로' 상태(개념=0, 정지). 다시 0 초과면 해제.
+  function changeHappy(data, amount) {
+    if (!data) return;
+    ensureVitals(data);
+    data.행복 = clamp((data.행복 || 0) + amount, 0, happyMax());
+    if (data.행복 <= 0) {
+      data.행복 = 0;
+      if (!data.happyCircuit) {
+        data.happyCircuit = true;
+        if (data.stats) data.stats.개념 = 0;     // 개념이 0으로 떨어짐
+      }
+    } else if (data.happyCircuit) {
+      data.happyCircuit = false;                 // 행복이 회복되면 행복회로 해제
+    }
+  }
+  // 체력 회복(최대=크기×hpScale). 실장푸드/짓소산 푸드 섭취 시 호출.
+  function recoverHp(data, amount) {
+    if (!data || amount <= 0) return;
+    const hm = hpMaxOf(data);
+    data.hp = clamp((data.hp == null ? hm : data.hp) + amount, 0, hm);
+  }
 
   function newAdult() {
-    return {
+    return ensureVitals({
       id: G.uid(), type: '성체실장',
       stats: {
-        육질: ri(C.ADULT_STAT_MIN, C.ADULT_STAT_MAX),
+        육질: bornQuality(ri(C.ADULT_STAT_MIN, C.ADULT_STAT_MAX)),
         개념: ri(C.ADULT_STAT_MIN, C.ADULT_STAT_MAX),
-        크기: ri(C.ADULT_STAT_MIN, C.ADULT_STAT_MAX),
+        크기: newSize('성체실장'),
       },
       growth: 0,
-    };
+    });
   }
 
   // 공원에서 등장하는 야생 실장석 (업그레이드 보너스 반영)
   function newWild(type) {
     const u = G.State.upgrades || {};
     const lvlBonus = (lvl) => { let b = 0; for (let i = 0; i < (lvl || 0); i++) b += ri(3, 5); return b; };
-    return {
+    return ensureVitals({
       id: G.uid(), type: type || '성체실장',
       stats: {
-        육질: clamp(ri(C.ADULT_STAT_MIN, C.ADULT_STAT_MAX) + lvlBonus(u.필라테스), 1, statMax()),
+        육질: bornQuality(ri(C.ADULT_STAT_MIN, C.ADULT_STAT_MAX) + lvlBonus(u.필라테스)),
         개념: clamp(ri(C.ADULT_STAT_MIN, C.ADULT_STAT_MAX) + lvlBonus(u.기초교육), 1, statMax()),
-        크기: clamp(ri(C.ADULT_STAT_MIN, C.ADULT_STAT_MAX) + lvlBonus(u.실장푸드뿌리기), 1, sizeMax()),
+        크기: clamp(newSize(type || '성체실장') + lvlBonus(u.실장푸드뿌리기), 1, sizeMax()),
       },
       growth: 0,
-    };
+    });
   }
 
-  // 출산: 부모 ±10, 크기는 type별 비율
+  // 출산: 부모 ±10, 크기는 type별 탄생 범위
   function breed(parentStats, childType) {
-    const ratio = C.SIZE_RATIO[childType] || 0.25;
     const v = C.BREED_VARIANCE;
-    return {
+    return ensureVitals({
       id: G.uid(), type: childType,
       stats: {
-        육질: clamp(Math.round(parentStats.육질 + rnd(-v, v)), 1, statMax()),
+        육질: bornQuality(parentStats.육질 + rnd(-v, v)),
         개념: clamp(Math.round(parentStats.개념 + rnd(-v, v)), 1, statMax()),
-        크기: clamp(Math.round(parentStats.크기 * ratio), 1, sizeMax()),
+        크기: newSize(childType),
       },
       growth: 0,
-    };
+    });
   }
 
   // 점액덩어리 숙성: 10초 지나면 구더기로 변함 (cargo/배회/우리 어디서든 호출)
   function ageSlime(data, dt) {
     if (!data || data.type !== '점액덩어리') return;
     data.slimeAge = (data.slimeAge || 0) + dt;
-    if (data.slimeAge >= C.SLIME_TIME) { data.type = '구더기'; data.slimeAge = 0; }
+    if (data.slimeAge >= C.SLIME_TIME) {
+      data.type = '구더기';
+      data.stats = data.stats || {};
+      data.stats.육질 = bornQuality(data.stats.육질);
+      data.stats.크기 = newSize('구더기');
+      data.slimeAge = 0;
+      data.sizeGrowT = 0;
+      data.growth = 0;
+    }
   }
 
   // 세면대 분류: 1/3씩 구더기/엄지/자실장. 크기 재설정. (구더기/점액덩어리 입력)
   function washClassify(maggot) {
     const r = Math.random();
     const newType = r < 1 / 3 ? '구더기' : (r < 2 / 3 ? '엄지' : '자실장');
-    const baseSize = (maggot.stats.크기 || 1) / (C.SIZE_RATIO[maggot.type] || C.SIZE_RATIO['구더기']);
-    const ratio = C.SIZE_RATIO[newType] || 0.25;
     const line = (G.LINES && G.LINES.wash[newType]) || '';
-    return {
+    return ensureVitals({
       id: G.uid(), type: newType,
       stats: {
-        육질: maggot.stats.육질, 개념: maggot.stats.개념,
-        크기: clamp(Math.round(baseSize * ratio), 1, sizeMax()),
+        육질: bornQuality(maggot.stats.육질), 개념: maggot.stats.개념,
+        크기: newSize(newType),
       },
       growth: 0,
       speech: line, speechT: line ? 2.0 : 0,
-    };
+    });
   }
 
-  // 성장: 다음 단계로. 크기를 새 비율로 환산.
+  // 성장: 크기가 다음 단계 최소치에 닿으면 타입만 다음 단계로 변경.
   function grow(creature) {
     const next = C.GROWTH_NEXT[creature.type];
     if (!next) return false;
-    const curRatio = C.SIZE_RATIO[creature.type] || 0.25;
-    const baseSize = (creature.stats.크기 || 1) / curRatio;
-    const newRatio = C.SIZE_RATIO[next] || 1;
+    const wasYoung = creature.type;
+    creature.stats = creature.stats || {};
     creature.type = next;
-    creature.stats.크기 = clamp(Math.round(baseSize * newRatio), 1, sizeMax());
+    creature.stats.크기 = clamp(Math.max(creature.stats.크기 || 1, stageMin(next)), 1, sizeMax());
     creature.growth = 0;
+    creature.sizeGrowT = 0;
+    // 자실장→성체로 진화하면 일정 시간 새끼를 잡아먹지 않음
+    if (wasYoung === '자실장' && next === '성체실장') creature.noEatT = C.GROWN_ADULT_NO_EAT || 30;
+    ensureVitals(creature);   // 크기 변동에 맞춰 최대 체력 갱신
     return true;
+  }
+
+  function tryEvolveBySize(creature) {
+    if (!creature || !creature.stats) return false;
+    normalizeSize(creature);
+    const at = C.SIZE_EVOLVE_AT && C.SIZE_EVOLVE_AT[creature.type];
+    if (!at || (creature.stats.크기 || 0) < at) return false;
+    return grow(creature);
+  }
+
+  function feedGrowth(creature, seconds) {
+    if (!creature || !creature.stats || seconds <= 0) return false;
+    normalizeSize(creature);
+    if ((creature.stats.크기 || 0) >= sizeMax()) return tryEvolveBySize(creature);
+    creature.sizeGrowT = (creature.sizeGrowT || 0) + seconds;
+    const growTime = C.SIZE_GROW_TIME || 20;
+    let evolved = false;
+    while (creature.sizeGrowT >= growTime && (creature.stats.크기 || 0) < sizeMax()) {
+      creature.sizeGrowT -= growTime;
+      creature.stats.크기 = clamp((creature.stats.크기 || 0) + 1, 1, sizeMax());
+      if (tryEvolveBySize(creature)) evolved = true;
+    }
+    creature.growth = 0;
+    return evolved;
   }
 
   // 등급: 3스탯 중 최고값 기준
@@ -137,5 +220,5 @@ G.Creatures = (function () {
     };
   }
 
-  return { newAdult, newWild, breed, ageSlime, washClassify, grow, priceOf, makeProduct, gradeOf, gradeOfStats };
+  return { newAdult, newWild, breed, ageSlime, washClassify, grow, tryEvolveBySize, feedGrowth, priceOf, makeProduct, gradeOf, gradeOfStats, ensureVitals, hpMaxOf, changeHappy, recoverHp };
 })();

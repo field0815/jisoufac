@@ -6,6 +6,7 @@ window.G = window.G || {};
 G.Assets = (function () {
   const images = {};   // path -> {img, ok}
   const sounds = {};   // path -> Audio
+  const bgm = { index: 0, audio: null, started: false, unlockBound: false, mode: null };
 
   function loadImage(path) {
     if (images[path]) return images[path];
@@ -62,17 +63,86 @@ G.Assets = (function () {
       }
     }
   }
+  function audioSettings() {
+    return (G.State && G.State.audio) || { bgm: 0.35, sfx: 1 };
+  }
+  function setBgmVolume(v) {
+    const a = audioSettings();
+    a.bgm = Math.max(0, Math.min(1, v));
+    if (bgm.audio) bgm.audio.volume = a.bgm;
+  }
+  function setSfxVolume(v) {
+    audioSettings().sfx = Math.max(0, Math.min(1, v));
+  }
 
   // 효과음: 파일이 있으면 재생, 없으면 조용히 무시
-  function playSfx(key) {
+  function playSfx(key, opts) {
     const path = G.SFX[key];
     if (!path) return;
     try {
       let a = sounds[path];
-      if (!a) { a = new Audio(path); a.volume = 0.5; sounds[path] = a; }
+      if (!a) { a = new Audio(path); sounds[path] = a; }
+      const volume = (opts && opts.volume != null) ? opts.volume : 0.5;
+      a.volume = Math.max(0, Math.min(1, volume * (audioSettings().sfx == null ? 1 : audioSettings().sfx)));
       a.currentTime = 0;
       a.play().catch(() => {}); // 파일 없음/자동재생 차단 무시
     } catch (e) { /* noop */ }
+  }
+  function nextBgmPath() {
+    const list = G.BGM || [];
+    if (!list.length) return null;
+    const path = list[bgm.index % list.length];
+    bgm.index = (bgm.index + 1) % list.length;
+    return path;
+  }
+  // 한 곡 재생. loop=true면 반복(오버라이드용), 아니면 끝나면 재생목록 다음 곡으로.
+  function playTrack(path, loop) {
+    if (!path) return;
+    try {
+      if (bgm.audio) { bgm.audio.pause(); bgm.audio.onended = null; }
+      const a = new Audio(path);
+      bgm.audio = a;
+      a.volume = audioSettings().bgm == null ? 0.35 : audioSettings().bgm;
+      a.loop = !!loop;
+      a.onended = loop ? null : playNextBgm;
+      const p = a.play();
+      if (p && p.catch) p.catch(bindBgmUnlock);
+    } catch (e) {
+      bindBgmUnlock();
+    }
+  }
+  function resumeCurrentMode() {
+    if (bgm.mode) playTrack(bgm.mode, true);
+    else playNextBgm();
+  }
+  function playNextBgm() {
+    if (bgm.mode) { playTrack(bgm.mode, true); return; }   // 오버라이드 중이면 그 곡 유지
+    playTrack(nextBgmPath(), false);
+  }
+  // 배경음 모드 설정: path(문자열)=그 곡을 반복 재생, null=일반 재생목록 복귀.
+  function setBgmMode(path) {
+    const desired = path || null;
+    if (bgm.mode === desired) return;
+    bgm.mode = desired;
+    if (!bgm.started) return;   // 시작 전이면 startBgm에서 적용
+    resumeCurrentMode();
+  }
+  function bindBgmUnlock() {
+    if (bgm.unlockBound) return;
+    bgm.unlockBound = true;
+    const retry = () => {
+      bgm.unlockBound = false;
+      window.removeEventListener('pointerdown', retry);
+      window.removeEventListener('keydown', retry);
+      if (!bgm.audio || bgm.audio.paused) resumeCurrentMode();
+    };
+    window.addEventListener('pointerdown', retry);
+    window.addEventListener('keydown', retry);
+  }
+  function startBgm() {
+    if (bgm.started) return;
+    bgm.started = true;
+    resumeCurrentMode();
   }
 
   // 미리 자주 쓰는 이미지 예열
@@ -123,11 +193,18 @@ G.Assets = (function () {
   }
   // 장치: 현재 프레임(가로 4). 그렸으면 true.
   function drawDeviceSprite(ctx, type, x, y, w, h, frameIdx) {
-    return drawFrame(ctx, deviceImg(type), x, y, w, h, frameIdx == null ? frame() : frameIdx, 0, 4, 1);
+    const cols = type === 'packer' ? 8 : 4;
+    const fi = frameIdx == null ? Math.floor(animT * (G.CONFIG.ANIM_FPS || 4)) % cols : frameIdx;
+    return drawFrame(ctx, deviceImg(type), x, y, w, h, fi, 0, cols, 1);
   }
   // 파일명을 직접 지정해 장치 스프라이트(가로 4프레임) 그리기 (예: birthing_ready.png)
   function drawDeviceSpriteNamed(ctx, fileName, x, y, w, h, frameIdx) {
     return drawFrame(ctx, loadImage('assets/images/devices/' + fileName), x, y, w, h, frameIdx == null ? frame() : frameIdx, 0, 4, 1);
+  }
+  // 파일명 + 가로 프레임 수(cols)를 지정해 한 프레임 그리기 (예: techica.png 8프레임)
+  function drawDeviceSheetFrame(ctx, fileName, x, y, w, h, frameIdx, cols) {
+    const n = cols || 4;
+    return drawFrame(ctx, loadImage('assets/images/devices/' + fileName), x, y, w, h, ((frameIdx == null ? 0 : frameIdx) % n + n) % n, 0, n, 1);
   }
   // 장치 프레임을 "원본 비율 유지"로 (cx,cy) 중심에 그림. 길이(가로)를 targetW에 맞춤.
   function drawDeviceFit(ctx, type, cx, cy, targetW, frameIdx) {
@@ -140,5 +217,5 @@ G.Assets = (function () {
     return true;
   }
 
-  return { loadImage, creatureImg, deviceImg, productImg, bgImg, drawOrPlaceholder, playSfx, preload, tick, frame, dirRow, drawCreatureSprite, drawCreatureNative, drawDeviceSprite, drawDeviceSpriteNamed, drawDeviceFit, drawProductImage };
+  return { loadImage, creatureImg, deviceImg, productImg, bgImg, drawOrPlaceholder, playSfx, setBgmVolume, setSfxVolume, startBgm, setBgmMode, preload, tick, frame, dirRow, drawCreatureSprite, drawCreatureNative, drawDeviceSprite, drawDeviceSpriteNamed, drawDeviceSheetFrame, drawDeviceFit, drawProductImage };
 })();

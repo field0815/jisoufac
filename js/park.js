@@ -14,6 +14,8 @@ G.Park = (function () {
   let placeMode = null;          // 설치 대기 중인 아이템 타입
   const FIELD_PAD = 50;
 
+  let boxesWrap, boxEls = [], penSig = '';
+
   function init() {
     root = document.getElementById('screen-park');
     let buildBtns = '';
@@ -23,23 +25,38 @@ G.Park = (function () {
     });
     root.innerHTML = `
       <div class="park-field" id="park-field">
-        <div class="capture-box" id="capture-box">🎯 포획 상자<br><small>여기로 드래그</small></div>
+        <div class="capture-boxes" id="capture-boxes"></div>
       </div>
       <div class="capture-panel">
         <div class="capture-info">공원 실장석: <span id="park-count">0</span> / ${C.PARK_MAX}
-          · <span class="muted">실장석을 포획 상자로 드래그해 포획</span></div>
-        <div class="park-build" id="park-build">${buildBtns}</div>
+          · <span class="muted">실장석을 포획 상자로 드래그 · 상자의 ▾로 보낼 우리 지정</span></div>
+        <div class="park-build" id="park-build">${buildBtns}
+          <button class="park-build-btn cap-buy" id="cap-buy" title="포획 상자 추가">🎯 상자 추가<small>₩${C.CAPTURE_BOX_COST}</small></button>
+        </div>
       </div>`;
     fieldEl = document.getElementById('park-field');
     countEl = document.getElementById('park-count');
-    boxEl = document.getElementById('capture-box');
+    boxesWrap = document.getElementById('capture-boxes');
+
+    if (!Array.isArray(S.captureBoxes) || !S.captureBoxes.length) S.captureBoxes = [{ targetPenId: null }];
+    rebuildBoxes();
 
     // 아이템 설치 메뉴
-    root.querySelectorAll('.park-build-btn').forEach(b => {
+    root.querySelectorAll('.park-build-btn[data-item]').forEach(b => {
       b.addEventListener('click', () => {
         placeMode = (placeMode === b.dataset.item) ? null : b.dataset.item;
         root.querySelectorAll('.park-build-btn').forEach(x => x.classList.toggle('active', x.dataset.item === placeMode));
       });
+    });
+    // 포획 상자 추가 구매
+    document.getElementById('cap-buy').addEventListener('click', () => {
+      if (S.captureBoxes.length >= C.CAPTURE_BOX_MAX) { G.UI.flash && G.UI.flash('포획 상자는 최대 ' + C.CAPTURE_BOX_MAX + '개까지'); return; }
+      if (S.money < C.CAPTURE_BOX_COST) { G.UI.flash && G.UI.flash('돈 부족!'); return; }
+      S.money -= C.CAPTURE_BOX_COST;
+      S.captureBoxes.push({ targetPenId: null });
+      penSig = '';
+      rebuildBoxes();
+      G.Assets.playSfx('place');
     });
     // 필드 클릭 → 아이템 설치
     fieldEl.addEventListener('click', (e) => {
@@ -54,7 +71,45 @@ G.Park = (function () {
       S.parkItems.push({ id: G.uid(), type: placeMode, x, y });
       G.Assets.playSfx('place');
     });
+  }
 
+  // 우리 목록(공장 buildings의 penbox) → 옵션 시그니처
+  function penList() { return (S.buildings || []).filter(b => b.type === 'penbox'); }
+  function penOptionsHtml(selectedId) {
+    let html = `<option value="">자동(가까운 우리)</option>`;
+    penList().forEach(p => {
+      const sel = (selectedId && p.id === selectedId) ? ' selected' : '';
+      html += `<option value="${p.id}"${sel}>${(p.name || (p.id + '번 우리'))}</option>`;
+    });
+    return html;
+  }
+  // 포획 상자 DOM 재구성 (개수 변동/초기화 시)
+  function rebuildBoxes() {
+    if (!boxesWrap) return;
+    boxesWrap.innerHTML = '';
+    boxEls = [];
+    S.captureBoxes.forEach((box, idx) => {
+      const el = document.createElement('div');
+      el.className = 'capture-box'; el.dataset.boxidx = idx;
+      el.style.top = (16 + idx * 86) + 'px';
+      el.innerHTML = `<div class="cb-title">🎯 포획 #${idx + 1}</div>
+        <select class="cb-pen"></select>`;
+      const sel = el.querySelector('.cb-pen');
+      sel.innerHTML = penOptionsHtml(box.targetPenId);
+      sel.addEventListener('mousedown', (e) => e.stopPropagation());   // 드래그 시작 방지
+      sel.addEventListener('change', () => { box.targetPenId = +sel.value || null; G.Assets.playSfx('click'); });
+      boxesWrap.appendChild(el);
+      boxEls.push(el);
+    });
+    penSig = penList().map(p => p.id + ':' + (p.name || '')).join('|');
+  }
+  // 커서 위치의 포획 상자 인덱스(없으면 -1)
+  function boxIndexAt(clientX, clientY) {
+    for (let i = 0; i < boxEls.length; i++) {
+      const r = boxEls[i].getBoundingClientRect();
+      if (clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom) return i;
+    }
+    return -1;
   }
 
   function pickType() {
@@ -75,12 +130,18 @@ G.Park = (function () {
     S.park.push(a);
   }
 
-  // 포획: 특정/무작위 1마리 → 우리(가득이면 공장 바닥 배회)
-  function capture(c) {
+  // 포획: 1마리 → 지정 상자의 우리(없으면 자동/가득이면 공장 바닥 배회)
+  function capture(c, boxIdx) {
     const i = S.park.indexOf(c); if (i < 0) return;
     S.park.splice(i, 1);
     delete c.x; delete c.y; delete c.vx; delete c.vy; delete c.role; delete c.familyId;
-    G.Factory.dropToFactory(c);
+    const box = (boxIdx != null && boxIdx >= 0) ? S.captureBoxes[boxIdx] : null;
+    let placed = false;
+    if (box && box.targetPenId) {
+      const pen = penList().find(p => p.id === box.targetPenId);
+      if (pen && G.Pens && G.Pens.addToPen) placed = G.Pens.addToPen(pen, c);   // 가득이면 false
+    }
+    if (!placed) G.Factory.dropToFactory(c);   // 자동/지정 우리 가득 → 기본 배치
     G.Assets.playSfx('capture');
   }
   function moveCreature(c, dt, f) {
@@ -138,10 +199,8 @@ G.Park = (function () {
     }
   }
 
-  // 포획 상자 위에 떨어뜨렸는지 판정 (필드 좌표)
-  function overBox(clientX, clientY) {
-    const r = boxEl.getBoundingClientRect();
-    return clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom;
+  function highlightBox(idx) {
+    boxEls.forEach((el, i) => el.classList.toggle('hot', i === idx));
   }
 
   function startDrag(c, el, e) {
@@ -154,21 +213,48 @@ G.Park = (function () {
         const sc = r.width / fieldEl.offsetWidth || 1;
         c.x = (ev.clientX - r.left) / sc; c.y = (ev.clientY - r.top) / sc;
         c.role = null; c.familyId = null;  // 드래그 중엔 가족 추종 해제
-        boxEl.classList.toggle('hot', overBox(ev.clientX, ev.clientY));
+        highlightBox(boxIndexAt(ev.clientX, ev.clientY));
       }
     };
     const up = (ev) => {
       window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up);
-      el.classList.remove('dragging'); boxEl.classList.remove('hot');
+      el.classList.remove('dragging'); highlightBox(-1);
       if (!dragging) { G.UI.showCreatureInfo(c, ev.clientX, ev.clientY); return; }
-      if (overBox(ev.clientX, ev.clientY)) capture(c);
+      const idx = boxIndexAt(ev.clientX, ev.clientY);
+      if (idx >= 0) capture(c, idx);
     };
     window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
   }
 
+  let bgApplied = false;
   function render() {
     if (S.screen !== 'park') return;
     countEl.textContent = S.park.length;
+
+    // 공원 배경(park.png): 로드되면 필드에 깔기(없으면 기본 그라데이션 유지)
+    if (!bgApplied && fieldEl) {
+      const pbg = G.Assets.bgImg('park');
+      if (pbg && pbg.ok && pbg.img.width) {
+        fieldEl.style.backgroundImage = `url(${pbg.img.src})`;
+        fieldEl.style.backgroundSize = 'cover';
+        fieldEl.style.backgroundPosition = 'center';
+        bgApplied = true;
+      }
+    }
+
+    // 상자 개수 변동 시 DOM 재구성
+    if (boxEls.length !== S.captureBoxes.length) { penSig = ''; rebuildBoxes(); }
+    // 우리 목록 변동 시 셀렉트 옵션 갱신(포커스 중이 아닐 때만)
+    const sig = penList().map(p => p.id + ':' + (p.name || '')).join('|');
+    if (sig !== penSig) {
+      penSig = sig;
+      boxEls.forEach((el, idx) => {
+        const sel = el.querySelector('.cb-pen');
+        if (sel && document.activeElement !== sel) sel.innerHTML = penOptionsHtml(S.captureBoxes[idx].targetPenId);
+      });
+    }
+    const buy = document.getElementById('cap-buy');
+    if (buy) buy.classList.toggle('disabled', S.captureBoxes.length >= C.CAPTURE_BOX_MAX);
 
     // 아이템 DOM 동기화
     const itEx = {};
