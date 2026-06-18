@@ -8,11 +8,19 @@ window.G = window.G || {};
 
   function clone(v) { return JSON.parse(JSON.stringify(v)); }
 
-  function freshState() {
+  function freshState(opts) {
+    opts = opts || {};
     // 가격 계수 깊은 복사 (런타임에 통계창에서 수정)
     const prices = clone(G.PRICE_DEFAULTS);
+    const difficulty = opts.difficulty || 'park';
     return {
-    money: C.START_MONEY,
+    money: difficulty === 'breeding' ? 50000 : C.START_MONEY,
+    difficulty,
+    tutorial: {
+      enabled: !!opts.tutorial, step: 0, hidden: false, flags: {}, reviewing: false,
+      completed: false, cancelled: false, completedSteps: {}, enteredStep: -1, explained: {},
+      conditional: { wildShown: false, wildMoved: false, raidWarnShown: false, turretResponseShown: false },
+    },
 
     // 공원
     park: [],
@@ -26,6 +34,14 @@ window.G = window.G || {};
     // 옵션
     audio: { bgm: 0.35, sfx: 1 },
     linggal: true,    // 링갈 ON/OFF — OFF면 실장석이 단순 대사만 함
+
+    // 퀘스트(무전)
+    quests: [],          // 활성 퀘스트 {id, org, item, n, stat, accepted, rewardText, reward}
+    questTimer: 0,       // 다음 퀘스트 생성까지 누적 시간
+    openingDone: false,  // 새 게임 시작 인트로 연출 완료 여부
+    introDone: false,    // 세계관 인트로 + 첫 퀘스트 발생 여부(콜로니 T1 트리거)
+    researchBonus: 0,    // 위석연구소 보상: 영구 연구력 가산
+    powerBonus: 0,       // 낙원컬트/위석연구소 보상: 영구 전력 가산
 
     // 자원 (실장석은 이제 우리(펜) 건물 안 또는 배회 상태로만 존재)
     food: C.START_FOOD || 0,  // 실장푸드 재고(사료) — 시작 보유량
@@ -51,6 +67,7 @@ window.G = window.G || {};
     researchProgress: 0,      // 현재 연구 누적 연구력
     researchProgressBank: {}, // 취소한 진행 중 연구의 저장 진행도: "key|level" -> progress
     colonyTier: 0,    // 콜로니 센터 티어(0~3)
+    colonyUpgrade: null,  // 진행 중인 티어 승급: { target, remain, total } 또는 null
 
     // 공장
     buildings: [],    // 펜(우리)도 buildings에 포함: {type:'penbox', creatures:[]}
@@ -98,12 +115,41 @@ window.G = window.G || {};
     base.researchProgress = Math.max(0, base.researchProgress || 0);
     if (!base.researchProgressBank || typeof base.researchProgressBank !== 'object') base.researchProgressBank = {};
     base.colonyTier = Math.max(0, Math.min(3, Math.floor(base.colonyTier || 0)));
+    if (base.colonyUpgrade && typeof base.colonyUpgrade === 'object') {
+      const cu = base.colonyUpgrade;
+      const target = Math.max(1, Math.min(3, Math.floor(cu.target || 0)));
+      const total = +cu.total > 0 ? +cu.total : 60;
+      const remain = Math.max(0, Math.min(total, +cu.remain || 0));
+      base.colonyUpgrade = target ? { target, remain, total } : null;
+    } else { base.colonyUpgrade = null; }
     base.powerUsed = Math.max(0, base.powerUsed || 0);
     if (!base.soldValueByType || typeof base.soldValueByType !== 'object') base.soldValueByType = {};
+    if (!base.difficulty) base.difficulty = 'park';
+    if (!['breeding', 'park', 'dokura'].includes(base.difficulty)) base.difficulty = 'park';
+    if (!base.tutorial || typeof base.tutorial !== 'object') base.tutorial = { enabled: false, step: 0, hidden: false };
+    base.tutorial.enabled = !!base.tutorial.enabled;
+    base.tutorial.step = Math.max(0, Math.floor(base.tutorial.step || 0));
+    base.tutorial.hidden = !!base.tutorial.hidden;
+    if (!base.tutorial.flags || typeof base.tutorial.flags !== 'object') base.tutorial.flags = {};
+    base.tutorial.reviewing = !!base.tutorial.reviewing;
+    base.tutorial.completed = !!base.tutorial.completed;
+    base.tutorial.cancelled = !!base.tutorial.cancelled;
+    if (!base.tutorial.completedSteps || typeof base.tutorial.completedSteps !== 'object') base.tutorial.completedSteps = {};
+    if (!base.tutorial.explained || typeof base.tutorial.explained !== 'object') base.tutorial.explained = {};
+    base.tutorial.enteredStep = Number.isFinite(+base.tutorial.enteredStep) ? Math.floor(base.tutorial.enteredStep) : -1;
+    base.tutorial.conditional = Object.assign({
+      wildShown: false, wildMoved: false, raidWarnShown: false, turretResponseShown: false,
+    }, base.tutorial.conditional || {});
     base.audio = Object.assign({ bgm: 0.35, sfx: 1 }, base.audio || {});
     if (typeof base.linggal !== 'boolean') base.linggal = true;
     base.umaiFood = Math.max(0, base.umaiFood || 0);
     base.dietFood = Math.max(0, base.dietFood || 0);
+    if (!Array.isArray(base.quests)) base.quests = [];
+    base.questTimer = base.questTimer || 0;
+    base.openingDone = !!base.openingDone;
+    base.introDone = !!base.introDone;
+    base.researchBonus = Math.max(0, base.researchBonus || 0);
+    base.powerBonus = Math.max(0, base.powerBonus || 0);
     base.unchi = Math.min(C.UNCHI_MAX || 100000, Math.max(0, base.unchi || 0));
     if (!base.doors || typeof base.doors !== 'object') base.doors = {};
     if (!Array.isArray(base.ruins)) base.ruins = [];
@@ -158,7 +204,7 @@ window.G = window.G || {};
   }
 
   G.createFreshState = freshState;
-  G.resetRuntimeState = function () { replaceState(freshState()); };
+  G.resetRuntimeState = function (opts) { replaceState(freshState(opts)); };
   G.applySavedState = replaceState;
 
   G.State = freshState();
@@ -184,10 +230,27 @@ window.G = window.G || {};
         factoryRuntime: G.Factory && G.Factory.exportRuntimeState ? G.Factory.exportRuntimeState() : null,
       };
     }
+    const LZ_PREFIX = 'LZv1:';
+    function encode(obj) {
+      const json = JSON.stringify(obj);
+      if (G.LZ && G.LZ.compressToUTF16) {
+        const c = G.LZ.compressToUTF16(json);
+        if (c && c.length < json.length) return LZ_PREFIX + c;  // 압축이 실제로 작을 때만
+      }
+      return json;
+    }
+    function decode(raw) {
+      if (raw == null) return null;
+      if (raw.slice(0, LZ_PREFIX.length) === LZ_PREFIX) {
+        if (!(G.LZ && G.LZ.decompressFromUTF16)) throw new Error('압축 해제 모듈 없음');
+        return JSON.parse(G.LZ.decompressFromUTF16(raw.slice(LZ_PREFIX.length)));
+      }
+      return JSON.parse(raw);  // 구버전 평문 JSON 호환
+    }
     function saveTo(key) {
       try {
         lastError = '';
-        localStorage.setItem(key, JSON.stringify(payload()));
+        localStorage.setItem(key, encode(payload()));
         return true;
       } catch (e) {
         return fail(e && e.name === 'QuotaExceededError' ? '저장 공간 부족' : '저장 실패', e);
@@ -198,7 +261,7 @@ window.G = window.G || {};
         lastError = '';
         const raw = localStorage.getItem(key);
         if (!raw) return fail('저장 슬롯 없음');
-        const data = JSON.parse(raw);
+        const data = decode(raw);
         G.applySavedState(data.state || data);
         if (G.Factory && G.Factory.importRuntimeState) G.Factory.importRuntimeState(data.factoryRuntime || data.factory || null);
         if (!silent) {
@@ -213,7 +276,7 @@ window.G = window.G || {};
     function savedAtOf(key) {
       const raw = localStorage.getItem(key);
       if (!raw) return null;
-      try { return JSON.parse(raw).savedAt || null; } catch (e) { return null; }
+      try { return decode(raw).savedAt || null; } catch (e) { return null; }
     }
 
     // 자동저장 API (기존 호환)
@@ -221,9 +284,9 @@ window.G = window.G || {};
     function load(silent) { return loadFrom(KEY, silent); }
     function hasSave() { return !!localStorage.getItem(KEY); }
     function savedAt() { return savedAtOf(KEY); }
-    function reset() {
+    function reset(opts) {
       localStorage.removeItem(KEY);
-      G.resetRuntimeState();
+      G.resetRuntimeState(opts || {});
       if (G.Factory && G.Factory.importRuntimeState) G.Factory.importRuntimeState(null);
       if (G.Factory && G.Factory.reloadState) G.Factory.reloadState({ setupStart: true });
       if (G.UI && G.UI.afterStateLoad) G.UI.afterStateLoad();
@@ -238,6 +301,44 @@ window.G = window.G || {};
     function slotCount() { return SLOTS; }
     function error() { return lastError; }
 
-    return { save, load, reset, hasSave, savedAt, saveSlot, loadSlot, hasSlot, slotSavedAt, slotCount, error };
+    // 파일로 내보내기/불러오기 (디스크에 직접 저장 — 용량 제한 없음)
+    function exportFile() {
+      try {
+        lastError = '';
+        const data = JSON.stringify(payload());
+        const blob = new Blob([data], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        const d = new Date();
+        const p2 = n => ('0' + n).slice(-2);
+        const ts = '' + d.getFullYear() + p2(d.getMonth() + 1) + p2(d.getDate()) + '_' + p2(d.getHours()) + p2(d.getMinutes());
+        a.href = url;
+        a.download = 'siljang_save_' + ts + '.json';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        return true;
+      } catch (e) { return fail('파일 내보내기 실패', e); }
+    }
+    function importFile(file, cb) {
+      const reader = new FileReader();
+      reader.onload = function () {
+        try {
+          lastError = '';
+          const data = JSON.parse(reader.result);
+          G.applySavedState(data.state || data);
+          if (G.Factory && G.Factory.importRuntimeState) G.Factory.importRuntimeState(data.factoryRuntime || data.factory || null);
+          if (G.Factory && G.Factory.reloadState) G.Factory.reloadState();
+          if (G.UI && G.UI.afterStateLoad) G.UI.afterStateLoad();
+          saveTo(KEY);  // 불러온 상태를 자동저장에도 반영
+          if (cb) cb(true);
+        } catch (e) { fail('파일 불러오기 실패', e); if (cb) cb(false); }
+      };
+      reader.onerror = function () { fail('파일 읽기 실패', reader.error); if (cb) cb(false); };
+      reader.readAsText(file);
+    }
+
+    return { save, load, reset, hasSave, savedAt, saveSlot, loadSlot, hasSlot, slotSavedAt, slotCount, error, exportFile, importFile };
   })();
 })();

@@ -75,6 +75,7 @@ G.Factory = (function () {
   let landPromptEl = null;
   let deviceInfoEl = null;
   let deviceInfoAnchor = null;
+  let deviceInfoBuilding = null;   // 현재 정보창에 표시 중인 건물(콜로니 승급 진행 갱신용)
   const FILTER_TYPES = Array.from(new Set(Object.keys(G.CREATURES).concat(Object.keys(G.PRODUCTS))));
   const FILTER_LABEL = { 사육실장: '사육실장 성체', 새끼사육실장: '사육실장 새끼', 독라: '독라 성체', 새끼독라: '독라 새끼' };
   const FEED_TYPES = ['운치', '실장푸드', '짓소산 푸드', '우마이푸드', '다이어트푸드'];
@@ -576,6 +577,17 @@ G.Factory = (function () {
     const pcol = Math.floor(COLS / 2) - 1, prow = crow + 6;
     const pen = makePen(pcol, prow, 3, 3, { free: true });
     if (pen) for (let i = 0; i < 5; i++) G.Pens.addToPen(pen, G.Creatures.newAdult());
+    seedStartPark();
+  }
+  function seedStartPark() {
+    if (!G.Creatures || (S.park && S.park.length)) return;
+    const w = C.GAME_W || 1440, h = (C.GAME_H || 960) - 174;
+    for (let i = 0; i < 5; i++) {
+      const c = G.Creatures.newWild('성체실장');
+      c.x = 80 + Math.random() * Math.max(1, w - 160);
+      c.y = 80 + Math.random() * Math.max(1, h - 160);
+      S.park.push(c);
+    }
   }
   // 콜로니가 없으면 시작 필드의 빈 5x5 자리에 배치(기존 세이브 복구용)
   function ensureColony() {
@@ -769,6 +781,7 @@ G.Factory = (function () {
         if (!filterTarget.filter) filterTarget.filter = [];
         const i = filterTarget.filter.indexOf(t);
         if (i >= 0) filterTarget.filter.splice(i, 1); else filterTarget.filter.push(t);
+        if (i < 0 && G.UI && G.UI.markTutorialAction) G.UI.markTutorialAction('filter:' + t);
         G.Assets.playSfx('click');
       });
       btns.appendChild(b);
@@ -782,6 +795,7 @@ G.Factory = (function () {
     filterTarget = (one && (one.type === 'sorter' || isGrabberType(one.type) || one.type === 'catcher')) ? one : null;
     if (!filterTarget || S.overlay || S.screen !== 'factory' || filterPanelSuppressedKey === selKey) { panel.style.display = 'none'; return; }
     panel.style.display = 'block';
+    if (G.UI && G.UI.markTutorialAction) G.UI.markTutorialAction('filterOpened');
     panel.querySelector('.fp-title').textContent = (G.DEVICES[filterTarget.type].name) + ' 필터';
     // 위치: 장치 오른쪽. 화면 아래 1/3 지점이면 위쪽으로 펼침(바닥 넘침 방지)
     const left = worldToGameX((filterTarget.col + filterTarget.w) * CELL) + 6;
@@ -996,6 +1010,7 @@ G.Factory = (function () {
   }
   function showDeviceInfoForType(type, clientX, clientY, b) {
     const def = G.DEVICES[type]; if (!def) return;
+    deviceInfoBuilding = b || null;
     const el = ensureDeviceInfo();
     const rot = def.rotatable ? '<span>회전 가능</span>' : '';
     const range = def.range ? `<span>범위 ${def.range.w}×${def.range.h}</span>` : '';
@@ -1053,9 +1068,28 @@ G.Factory = (function () {
       upgradeColonyTier();
       showDeviceInfoForBuilding(b, deviceInfoAnchor ? deviceInfoAnchor.x : clientX, deviceInfoAnchor ? deviceInfoAnchor.y : clientY);
     };
+    el.querySelectorAll('[data-quest-accept]').forEach(btn => btn.onclick = () => {
+      acceptQuest(+btn.dataset.questAccept);
+      showDeviceInfoForBuilding(b, deviceInfoAnchor ? deviceInfoAnchor.x : clientX, deviceInfoAnchor ? deviceInfoAnchor.y : clientY);
+    });
+    el.querySelectorAll('[data-quest-reject]').forEach(btn => btn.onclick = () => {
+      rejectQuest(+btn.dataset.questReject);
+      showDeviceInfoForBuilding(b, deviceInfoAnchor ? deviceInfoAnchor.x : clientX, deviceInfoAnchor ? deviceInfoAnchor.y : clientY);
+    });
+    el.querySelectorAll('[data-quest-complete]').forEach(btn => btn.onclick = () => {
+      completeQuest(+btn.dataset.questComplete);
+      showDeviceInfoForBuilding(b, deviceInfoAnchor ? deviceInfoAnchor.x : clientX, deviceInfoAnchor ? deviceInfoAnchor.y : clientY);
+    });
     el.querySelectorAll('[data-reformer-mode]').forEach(btn => btn.onclick = () => {
       if (!b || b.type !== 'reformer') return;
       b.defaultMode = btn.dataset.reformerMode;
+      G.Assets.playSfx('click');
+      showDeviceInfoForBuilding(b, deviceInfoAnchor ? deviceInfoAnchor.x : clientX, deviceInfoAnchor ? deviceInfoAnchor.y : clientY);
+    });
+    el.querySelectorAll('[data-cook-menu]').forEach(btn => btn.onclick = () => {
+      if (!b || b.type !== 'cookery') return;
+      b.menu = (b.menu === btn.dataset.cookMenu) ? null : btn.dataset.cookMenu;   // 다시 누르면 해제
+      b.cooking = null; b.timer = 0;
       G.Assets.playSfx('click');
       showDeviceInfoForBuilding(b, deviceInfoAnchor ? deviceInfoAnchor.x : clientX, deviceInfoAnchor ? deviceInfoAnchor.y : clientY);
     });
@@ -1064,7 +1098,7 @@ G.Factory = (function () {
     positionMiniPanel(el, clientX, clientY, avoidInfoPanels(el));
   }
   function showDeviceInfoForBuilding(b, clientX, clientY) { if (b) showDeviceInfoForType(b.type, clientX, clientY, b); }
-  function hideDeviceInfo() { if (deviceInfoEl) deviceInfoEl.style.display = 'none'; deviceInfoAnchor = null; }
+  function hideDeviceInfo() { if (deviceInfoEl) deviceInfoEl.style.display = 'none'; deviceInfoAnchor = null; deviceInfoBuilding = null; }
   function repositionDeviceInfo() {
     if (deviceInfoEl && deviceInfoEl.style.display !== 'none' && deviceInfoAnchor) {
       positionMiniPanel(deviceInfoEl, deviceInfoAnchor.x, deviceInfoAnchor.y, avoidInfoPanels(deviceInfoEl));
@@ -1105,10 +1139,26 @@ G.Factory = (function () {
   }
   function deviceInfoActions(b) {
     if (b.type === 'colony') {
+      const up = S.colonyUpgrade;
       const next = (S.colonyTier || 0) + 1;
-      if (next > 3) return '';
-      const c = colonyTierCost(next);
-      return `<div class="di-actions"><button data-colony-tier-up="1">티어 ${next} 승급 (${moneyCostHtml(c.money)}${c.scrap ? ' ' + resourceCostHtml('철조각', c.scrap) : ''})</button></div>`;
+      let html = '';
+      if (up) {
+        const sec = Math.max(0, Math.ceil(up.remain));
+        const pct = Math.floor(clamp(1 - up.remain / up.total, 0, 1) * 100);
+        html += `<div class="di-row"><span>티어 ${up.target} 승급 중</span><b>${fmtMMSS(sec)} 남음</b></div>`;
+        html += `<div class="di-actions"><button disabled>승급 진행 중... ${pct}%</button></div>`;
+      } else if (next <= 3) {
+        const c = colonyTierCost(next);
+        const lock = colonyTierLockReason(next);
+        const mins = Math.round(colonyUpgradeDuration(next) / 60);
+        if (lock) {
+          html += `<div class="di-actions"><button disabled>티어 ${next} 승급 — ${lock}</button></div>`;
+        } else {
+          html += `<div class="di-actions"><button data-colony-tier-up="1">티어 ${next} 승급 (${moneyCostHtml(c.money)}${c.scrap ? ' ' + resourceCostHtml('철조각', c.scrap) : ''}) · ${mins}분 소요</button></div>`;
+        }
+      }
+      html += questBoardHtml();
+      return html;
     }
     if (b.type === 'correction' && b.teacher) return '<div class="di-actions"><button data-action="detach-teacher">교사 해제</button></div>';
     if (b.type === 'feeder') {
@@ -1118,7 +1168,8 @@ G.Factory = (function () {
     }
     if (b.type === 'catcher') {
       const lv = (b.up && b.up.range) || 0, max = C.CATCH_UP_MAX || 8;
-      const side = 5 + lv * (C.CATCH_RANGE_PER_LV || 1) * 2;
+      const base = (G.DEVICES.catcher && G.DEVICES.catcher.range && G.DEVICES.catcher.range.w) || 5;
+      const side = base + lv * (C.CATCH_RANGE_PER_LV || 1) * 2;
       const label = lv >= max ? '범위 MAX' : ('범위 +1 (₩' + catchUpCost(b).toLocaleString() + ')');
       return `<div class="di-row"><span>범위</span><b>${side}×${side} · Lv.${lv}/${max}</b></div>` +
         `<div class="di-actions"><button data-catch-up="1" ${lv >= max ? 'disabled' : ''}>${label}</button></div>`;
@@ -1133,28 +1184,109 @@ G.Factory = (function () {
       return '<div class="di-row"><span>기본 명령</span><b>갓 생산된 노동석에 적용</b></div>' +
         '<div class="di-actions">' + LABOR_MODES.map(([m, label]) => `<button data-reformer-mode="${m}" class="${cur === m ? 'active' : ''}">${label}</button>`).join('') + '</div>';
     }
+    if (b.type === 'cookery') {
+      const cook = G.DEVICES.cookery.cook;
+      const cur = b.menu || '';
+      const btns = Object.keys(cook).map(key => {
+        const r = cook[key];
+        return `<button class="cook-menu-btn ${cur === key ? 'active' : ''}" data-cook-menu="${key}" title="${escAttr(r.out + ' — ' + r.desc)}">${deviceInfoItemIcon(r.out)}<small>${r.out}</small></button>`;
+      }).join('');
+      return '<div class="di-row"><span>메뉴 선택</span><b>' + (cur ? cook[cur].out : '없음') + '</b></div>' +
+        (cur ? `<div class="di-desc-sub">${cook[cur].desc}</div>` : '<div class="di-desc-sub">메뉴를 골라야 조리를 시작합니다.</div>') +
+        '<div class="di-actions cook-menu">' + btns + '</div>';
+    }
     return '';
   }
   function catchUpCost(b) { return (C.CATCH_UP_COST || 800) * (((b.up && b.up.range) || 0) + 1); }
+  // 콜로니 패널의 퀘스트 보드 HTML
+  function questBoardHtml() {
+    const qs = questsForUI();
+    let html = '<div class="di-quest-head">📻 무전 의뢰</div>';
+    if (!qs.length) { return html + '<div class="di-desc-sub">대기 중인 의뢰가 없습니다.</div>'; }
+    for (const q of qs) {
+      const statTxt = q.stat ? ` <small>(${q.stat.key}≥${q.stat.min})</small>` : '';
+      const prog = q.accepted ? ` <b class="${q.ready ? 'q-ok' : 'q-no'}">${q.have}/${q.n}</b>` : '';
+      const btn = q.accepted
+        ? `<button data-quest-complete="${q.id}" ${q.ready ? '' : 'disabled'}>퀘스트 완료</button>`
+        : `<button data-quest-accept="${q.id}">퀘스트 수락</button><button data-quest-reject="${q.id}">거절</button>`;
+      html += `<div class="di-quest" style="border-left-color:${q.color}">` +
+        `<div class="di-quest-org" style="color:${q.color}">${q.org}</div>` +
+        `<div class="di-quest-req">${deviceInfoItemIcon(q.item)}<span>${(FILTER_LABEL[q.item] || q.item)} ×${q.n}${statTxt}</span>${prog}</div>` +
+        `<div class="di-quest-reward">보상 ${q.rewardText}</div>` +
+        `<div class="di-actions">${btn}</div></div>`;
+    }
+    return html;
+  }
   function colonyTierCost(tier) {
     if (tier === 1) return { money: 10000, scrap: 0 };
     if (tier === 2) return { money: 50000, scrap: 100 };
     if (tier === 3) return { money: 200000, scrap: 1000 };
     return { money: 0, scrap: 0 };
   }
+  // 티어 승급 소요시간(초): 목표 티어 × 설정값 (T1=1분, T2=2분, T3=3분)
+  function colonyUpgradeDuration(tier) { return Math.max(1, tier) * (C.COLONY_UPGRADE_SEC_PER_TIER || 60); }
+  // 승급 잠금 사유(없으면 ''). 티어 1은 연구소+도축기 건설 필요.
+  function colonyTierLockReason(tier) {
+    if (tier === 1) {
+      const hasLab = S.buildings.some(b => b.type === 'lab');
+      const hasSlaughter = S.buildings.some(b => b.type === 'slaughter');
+      if (!hasLab || !hasSlaughter) return '연구소/도축기 필요';
+    }
+    return '';
+  }
+  function fmtMMSS(sec) {
+    sec = Math.max(0, Math.floor(sec));
+    return Math.floor(sec / 60) + ':' + ('0' + (sec % 60)).slice(-2);
+  }
+  function focusColonyCenter() {
+    const c = S.buildings.find(b => b.type === 'colony');
+    if (c) { const ctr = buildingCenter(c); focusCameraOnGrid(ctr.gx, ctr.gy); }
+  }
+  function refreshColonyPanelIfOpen() {
+    if (!deviceInfoEl || deviceInfoEl.style.display === 'none') return;
+    if (!deviceInfoBuilding || deviceInfoBuilding.type !== 'colony') return;
+    showDeviceInfoForBuilding(deviceInfoBuilding, deviceInfoAnchor ? deviceInfoAnchor.x : 0, deviceInfoAnchor ? deviceInfoAnchor.y : 0);
+  }
   function upgradeColonyTier() {
+    if (G.UI && G.UI.isBasicTutorialActive && G.UI.isBasicTutorialActive()) {
+      G.UI.flash && G.UI.flash('기초 튜토리얼 중에는 콜로니 티어를 올릴 수 없습니다.');
+      return false;
+    }
+    if (S.colonyUpgrade) { G.UI.flash && G.UI.flash('이미 승급이 진행 중입니다.'); return false; }
     const next = (S.colonyTier || 0) + 1;
     if (next > 3) { G.UI.flash && G.UI.flash('콜로니 센터 티어 MAX'); return false; }
+    const lock = colonyTierLockReason(next);
+    if (lock) { G.UI.flash && G.UI.flash('승급 잠김: ' + lock); return false; }
     const cost = colonyTierCost(next);
     if (S.money < cost.money) { G.UI.flash && G.UI.flash('돈 부족! (₩' + cost.money.toLocaleString() + ')'); return false; }
     if (cost.scrap && warehouseCount('철조각') < cost.scrap) { G.UI.flash && G.UI.flash('철조각 부족! (' + cost.scrap.toLocaleString() + '개 필요)'); return false; }
     snapshot();
     S.money -= cost.money;
     if (cost.scrap) takeWarehouse('철조각', cost.scrap);
-    S.colonyTier = next;
+    const dur = colonyUpgradeDuration(next);
+    S.colonyUpgrade = { target: next, remain: dur, total: dur };
     G.Assets.playSfx('place');
-    G.UI.flash && G.UI.flash('콜로니 센터 티어 ' + next + ' 달성');
+    G.UI.flash && G.UI.flash('콜로니 센터 티어 ' + next + ' 승급 시작 (' + Math.round(dur / 60) + '분 소요)');
     return true;
+  }
+  // 티어 승급 타이머 진행 → 완료 시 티어 적용 + 카메라를 콜로니 센터로 이동
+  function updateColonyUpgrade(dt) {
+    const up = S.colonyUpgrade;
+    if (!up) return;
+    up.remain -= dt;
+    if (up.remain <= 0) {
+      const target = up.target;
+      S.colonyUpgrade = null;
+      S.colonyTier = target;
+      G.Assets.playSfx('place');
+      G.UI.flash && G.UI.flash('콜로니 센터 티어 ' + target + ' 승급 완료!');
+      if (target === 1) triggerIntro();   // T1 달성 → 세계관 인트로 + 첫 퀘스트
+      focusColonyCenter();
+      refreshColonyPanelIfOpen();
+      return;
+    }
+    const sec = Math.ceil(up.remain);
+    if (sec !== up._lastSec) { up._lastSec = sec; refreshColonyPanelIfOpen(); }   // 초가 바뀔 때만 패널 갱신
   }
   function itemLabel(data) { return data ? (FILTER_LABEL[data.type] || (G.CREATURES[data.type] && G.CREATURES[data.type].label) || data.type) : '없음'; }
   function escAttr(s) { return String(s).replace(/"/g, '&quot;'); }
@@ -1372,6 +1504,7 @@ G.Factory = (function () {
     ]);
     if (b.type === 'catcher') return infoRows([
       ['기능', '범위 안 배회 실장석 수거'],
+      ['범위 내 대상', catcherTargets(b).length],
       ['필터', b.filter && b.filter.length ? b.filter.length + '종' : '전체 통과'],
       ['출력', '앞쪽 출구'],
     ]);
@@ -1410,6 +1543,61 @@ G.Factory = (function () {
     cam.zoom = 1;
     cam.x = cx - (C.VIEW_W / 2) / cam.zoom;
     cam.y = cy - (C.VIEW_H / 2) / cam.zoom;
+  }
+  function colonyCenterPx() {
+    const b = S.buildings.find(x => x.type === 'colony') || S.buildings.find(x => x.colony);
+    if (b) return { x: (b.col + (b.w || 1) / 2) * CELL, y: (b.row + (b.h || 1) / 2) * CELL };
+    return { x: (COLS / 2) * CELL, y: (ROWS / 2) * CELL };
+  }
+  function focusCameraOn(px, py, zoom) {
+    cam.zoom = clamp(zoom, C.ZOOM_MIN, C.ZOOM_MAX);
+    cam.x = px - (C.VIEW_W / 2) / cam.zoom;
+    cam.y = py - (C.VIEW_H / 2) / cam.zoom;
+    clampCamera();
+  }
+  function playOpeningIntro(force) {
+    if (!force && S.openingDone) return;
+    if (!canvas) return;
+    S.openingDone = true;
+    G.openingPaused = true;
+    G.dialogPaused = false;
+    if (G.Assets && G.Assets.stopBgm) G.Assets.stopBgm();
+    const game = document.getElementById('game');
+    let ov = document.getElementById('opening-vignette');
+    if (!ov) { ov = document.createElement('div'); ov.id = 'opening-vignette'; game.appendChild(ov); }
+    ov.style.display = 'block';
+    ov.style.opacity = '1';
+    const center = colonyCenterPx();
+    const farZoom = C.ZOOM_MIN || 0.25;
+    const nearZoom = 1;
+    focusCameraOn(center.x, center.y, farZoom);
+    const started = performance.now();
+    const hold = 1000, zoomDur = 4200;
+    function smooth(t) { return t * t * (3 - 2 * t); }
+    function step(now) {
+      const elapsed = now - started;
+      if (elapsed < hold) {
+        ov.style.opacity = '1';
+        focusCameraOn(center.x, center.y, farZoom);
+        requestAnimationFrame(step);
+        return;
+      }
+      const p = Math.min(1, (elapsed - hold) / zoomDur);
+      const e = smooth(p);
+      const z = farZoom + (nearZoom - farZoom) * e;
+      focusCameraOn(center.x, center.y, z);
+      ov.style.opacity = String(1 - e);
+      if (p < 1) requestAnimationFrame(step);
+      else {
+        ov.style.display = 'none';
+        G.openingPaused = false;
+        if (G.Assets && G.Assets.startBgm) G.Assets.startBgm({ fadeIn: 4.5 });
+        if (G.UI && G.UI.midoriRadio) {
+          G.UI.midoriRadio((G.DIALOGUES && G.DIALOGUES.openingMidori) || ['반가운데스, 사장님. 와타시는 미도리데스.'], { long: true, emotion: 'laziness' });
+        }
+      }
+    }
+    requestAnimationFrame(step);
   }
   // 클라이언트 좌표 → 월드(타일 소수). 캔버스 밖이면 null
   function screenToWorld(clientX, clientY) {
@@ -2069,6 +2257,7 @@ G.Factory = (function () {
     refund(oldRefund);
     S.money -= cost;
     attach({ id: G.uid(), type: beltType, col, row, w: 1, h: 1, dir, cost });
+    if (G.UI && G.UI.markTutorialAction) G.UI.markTutorialAction('built:' + beltType);
     return true;
   }
   function beltRefundAt(c, r) {
@@ -2139,6 +2328,7 @@ G.Factory = (function () {
       if (opts.filterLane != null && type === 'sorter') b.filterLane = opts.filterLane;
     }
     attach(b);
+    if (G.UI && G.UI.markTutorialAction) G.UI.markTutorialAction('built:' + type);
     return true;
   }
 
@@ -2422,7 +2612,11 @@ G.Factory = (function () {
     const isAdult = G.CREATURES[data.type] && G.CREATURES[data.type].isAdult;
     switch (dev.type) {
       case 'birthing':
-        if (!dev.worker && isAdult) { dev.worker = data; dev.state = 'producing'; dev.birthTimer = 0; dev.lifeTimer = 0; playDeviceSfx('birth', dev); return true; }
+        if (!dev.worker && isAdult) {
+          dev.worker = data; dev.state = 'producing'; dev.birthTimer = 0; dev.lifeTimer = 0;
+          if (G.UI && G.UI.markTutorialAction) G.UI.markTutorialAction('loaded:birthing');
+          playDeviceSfx('birth', dev); return true;
+        }
         return false;
       case 'washbasin':
         if (data.type === '점액덩어리' && accepts(def, data.type) && !dev.item) { dev.item = data; dev.washTimer = 0; dev.state = 'producing'; return true; }
@@ -2444,20 +2638,24 @@ G.Factory = (function () {
         if (!dev.buffer) dev.buffer = [];
         if (dev.buffer.length < SORTER_BUF) { dev.buffer.push(data); return true; }
         return false;
-      case 'mixer':
+      case 'mixer': {
+        const conc = C.MIX_CONCENTRATE || 5;
         if (data.type === '분쇄육' && !dev.slotMeat) { dev.slotMeat = data; return true; }
         if (data.type === '운치' && (dev.unchiN || 0) < C.MIX_UNCHI) { dev.unchiN = Math.min(C.MIX_UNCHI, (dev.unchiN || 0) + (data.amount || 1)); return true; }
         if (data.type === '짓소산' && !dev.slotAcid) { dev.slotAcid = data; return true; }
         if (data.type === '조미료' && !dev.slotSeasoning) { dev.slotSeasoning = data; return true; }  // 우마이푸드 재료
         if (data.type === '철조각' && !dev.slotScrap) { dev.slotScrap = data; return true; }          // 다이어트푸드 재료
+        if (data.type === '농축운치' && (dev.cA || 0) < conc) { dev.cA = (dev.cA || 0) + (data.amount || 1); return true; }   // → 고농축운치
+        if (data.type === '고농축운치' && (dev.cB || 0) < conc) { dev.cB = (dev.cB || 0) + (data.amount || 1); return true; } // → 초고농축운치
         if (data.type === '실장푸드' && (dev.foodN || 0) < (C.MIX_FOOD_NEED || 50)) { dev.foodN = Math.min(C.MIX_FOOD_NEED || 50, (dev.foodN || 0) + (data.amount || 1)); return true; }
         return addWorker(dev, data);
+      }
       case 'cookery':
-        if (data.type === '조미료') {
-          if ((S.seasoning || 0) >= (C.SEASONING_MAX || 50)) return false;   // 비축 최대치 도달 시 받지 않음
+        if (data.type === '조미료') {   // 조미료는 전역 비축(S.seasoning)으로
+          if ((S.seasoning || 0) >= (C.SEASONING_MAX || 50)) return false;
           S.seasoning = Math.min((C.SEASONING_MAX || 50), (S.seasoning || 0) + 1); playDeviceSfx('click', dev); return true;
         }
-        if (def.cook[data.type] || data.type === '짓소산') {
+        if (accepts(def, data.type)) {   // 메뉴 재료 비축(잘못된 재료여도 받아두되, 선택 메뉴가 충족돼야 조리)
           if (!dev.mats) dev.mats = {};
           if (!dev.matStats) dev.matStats = {};
           if (!Array.isArray(dev.matStats[data.type])) dev.matStats[data.type] = [];
@@ -2513,7 +2711,11 @@ G.Factory = (function () {
         if (dev.queue.length < C.TUNNEL_CAP) { dev.queue.push({ data: data, t: 0 }); return true; }
         return false;
       case 'penbox':
-        if (G.CREATURES[data.type]) return G.Pens.addToPen(dev, data, entryCell); // 성체/새끼 수용량 체크
+        if (G.CREATURES[data.type]) {
+          const added = G.Pens.addToPen(dev, data, entryCell);
+          if (added && G.UI && G.UI.markTutorialAction) G.UI.markTutorialAction('penReceived:' + data.type);
+          return added;
+        }
         return false;
       case 'warehouse': case 'colony':
         if (G.CREATURES[data.type]) return false; // 생물은 창고에 안 들어감
@@ -2569,6 +2771,12 @@ G.Factory = (function () {
     const amount = (type === '실장푸드' || type === '짓소산 푸드') ? 50 : (type === '운치' ? (C.UNCHI_BUNDLE || 10) : 1);
     return { id: G.uid(), type, isProduct: false, amount, stats: { 크기: (G.PRODUCTS[type] && G.PRODUCTS[type].size) || 0 } };
   }
+  // 운치는 상한에 도달해도 창고 입고 자체는 계속 성공한다.
+  // 초과분은 물류 적체를 막기 위해 소모하고, 표시 재고는 최대값으로 유지한다.
+  function storeUnchi(amount) {
+    S.unchi = Math.min(unchiMax(), Math.max(0, S.unchi || 0) + Math.max(0, amount || 0));
+    return true;
+  }
   function makeSpecialTreatCargo(type) {
     return { id: G.uid(), type, isProduct: false, amount: 1, stats: { 크기: 0 } };
   }
@@ -2611,6 +2819,7 @@ G.Factory = (function () {
     const bundle = C.UNCHI_BUNDLE || 10;
     if ((pen.unchi || 0) < bundle) return null;
     pen.unchi -= bundle;
+    if (G.UI && G.UI.markTutorialAction) G.UI.markTutorialAction('extracted:운치');
     // 얼룩은 다음 프레임 reconcilePenStains가 오염도%에 맞춰 재조정함
     return resourceCargoData('운치');
   }
@@ -2631,11 +2840,12 @@ G.Factory = (function () {
   }
   // 창고 입고: 실장푸드/운치=자원 재고, 그 외(생산품/생물)=판매 대기 재고에 저장(즉시판매 X)
   function warehouseIntake(data, source) {
+    if (data && data.type && G.UI && G.UI.markTutorialAction) G.UI.markTutorialAction('stored:' + data.type);
     if (data.type === '실장푸드') { S.food += data.amount || 1; return; }
     if (data.type === '짓소산 푸드') { S.jissoFood = (S.jissoFood || 0) + (data.amount || 1); return; }
     if (data.type === '우마이푸드') { S.umaiFood = (S.umaiFood || 0) + (data.amount || 1); return; }
     if (data.type === '다이어트푸드') { S.dietFood = (S.dietFood || 0) + (data.amount || 1); return; }
-    if (data.type === '운치') { S.unchi = Math.min(unchiMax(), (S.unchi || 0) + (data.amount || 1)); return; }
+    if (data.type === '운치') { storeUnchi(data.amount || 1); return; }
     if (S.autoSell[data.type]) { sellCargo(data, source); return; }   // 자동판매: 입고 즉시 판매
     if (!S.warehouse[data.type]) S.warehouse[data.type] = [];
     S.warehouse[data.type].push(data);
@@ -2643,6 +2853,7 @@ G.Factory = (function () {
   // 통계창 "판매" 버튼: 창고 재고 전량 판매
   function recordSale(type, price, count) {
     if (!type) return;
+    if (G.UI && G.UI.markTutorialAction) G.UI.markTutorialAction('sold:' + type);
     const n = count == null ? 1 : count;
     S.sold[type] = (S.sold[type] || 0) + n;
     if (!S.soldValueByType || typeof S.soldValueByType !== 'object') S.soldValueByType = {};
@@ -2733,6 +2944,7 @@ G.Factory = (function () {
 
   /* ---- 화물 ----------------------------------------------------------- */
   function makeCargo(data, col, row) {
+    if (data && data.type && G.UI && G.UI.markTutorialAction) G.UI.markTutorialAction('made:' + data.type);
     const cg = { id: G.uid(), data, gx: col + 0.5, gy: row + 0.5, dir: 1, axis: 'h', sorterDir: null, sorterCell: null };
     cargoIdxAdd(cg);   // 같은 프레임 내 수용량 판정에 즉시 반영
     return cg;
@@ -2788,6 +3000,8 @@ G.Factory = (function () {
       if (data.type === '짓소산' && !d.slotAcid) return 'mixAcid';
       if (data.type === '조미료' && !d.slotSeasoning) return 'mixSeasoning';
       if (data.type === '철조각' && !d.slotScrap) return 'mixScrap';
+      if (data.type === '농축운치' && (d.cA || 0) < (C.MIX_CONCENTRATE || 5)) return 'mixCA';
+      if (data.type === '고농축운치' && (d.cB || 0) < (C.MIX_CONCENTRATE || 5)) return 'mixCB';
       if (data.type === '실장푸드' && (d.foodN || 0) < (C.MIX_FOOD_NEED || 50)) return 'mixFood';
       return false;
     }
@@ -2800,7 +3014,7 @@ G.Factory = (function () {
       return ((C.CHAOS_FUEL_TIME && C.CHAOS_FUEL_TIME[data.type]) && !d.fuel && !d.fuelT) ? 'power' : false;
     }
     if (d.type === 'packer') return (data.type === '철조각' || data.type === '분쇄육' || data.type === '실장육') ? 'pack' : false;
-    if (d.type === 'cookery') return (def.cook[data.type] || data.type === '조미료' || data.type === '짓소산') ? 'cook' : false;
+    if (d.type === 'cookery') return (accepts(def, data.type) || data.type === '조미료') ? 'cook' : false;
     if (d.type === 'acidgen') return (data.type === '성체실장' && !d.item && !d.output) ? 'acidgen' : false;
     if (d.type === 'correction') {
       if (data.type === '사육실장' && !d.teacher) return 'teacher';
@@ -2823,7 +3037,7 @@ G.Factory = (function () {
   }
 
   /* ---- 시뮬레이션 ----------------------------------------------------- */
-  function update(dt) { rebuildFrameCaches(); updateCameraKeys(dt); tickEconomy(dt); tickInvasion(dt); updateCargo(dt); updateDevices(dt); updateResearch(dt); updateWanderers(dt); updateMortarShells(dt); updateParticles(dt); updateFloatTexts(dt); updateCoinEffects(dt); updateStains(dt); updateBgmMode(dt); }
+  function update(dt) { rebuildFrameCaches(); updateCameraKeys(dt); tickEconomy(dt); tickInvasion(dt); updateCargo(dt); updateDevices(dt); updateResearch(dt); updateColonyUpgrade(dt); updateWanderers(dt); updateMortarShells(dt); updateParticles(dt); updateFloatTexts(dt); updateCoinEffects(dt); updateStains(dt); updateBgmMode(dt); tickQuests(dt); }
   // 배경음 전환: 침입(레이드) > 매지컬 테치카(확대 시) > 일반.
   let raidFadeT = 0;   // 침입자 전멸 후 원래 음악 복귀까지 남은 시간
   function updateBgmMode(dt) {
@@ -2856,6 +3070,249 @@ G.Factory = (function () {
     cam.y += y / len * speed * dt;
     clampCamera();
   }
+  function focusCameraOnGrid(gx, gy) {
+    cam.x = gx * CELL - canvas.width / (2 * cam.zoom);
+    cam.y = gy * CELL - canvas.height / (2 * cam.zoom);
+    clampCamera();
+  }
+  function forceTutorialGrowth() {
+    const pens = G.Pens.allPens();
+    const pen = pens[1] || pens[0];
+    if (!pen || !pen.creatures) return false;
+    const child = pen.creatures.find(c => c.type === '자실장') || pen.creatures.find(c => c.type === '엄지') || pen.creatures.find(c => c.type === '구더기');
+    if (!child) return false;
+    let guard = 0;
+    while (child.type !== '성체실장' && guard++ < 5 && G.Creatures.grow(child)) {}
+    if (child.type === '성체실장') {
+      child.noEatT = Math.max(child.noEatT || 0, 120);
+      if (G.UI && G.UI.markTutorialAction) G.UI.markTutorialAction('tutorialAdultGrown');
+      return true;
+    }
+    return false;
+  }
+  function tutorialGrowthLineConnected() {
+    const pens = G.Pens.allPens();
+    const adultPen = pens[0], childPen = pens[1];
+    if (!adultPen || !childPen) return false;
+    const candidates = S.buildings.filter(b => isGrabberType(b.type) && (b.filter || []).includes('성체실장'));
+    for (const grabber of candidates) {
+      const roles = grabberRoles(grabber);
+      if (deviceAt(roles.pickup.c, roles.pickup.r) !== childPen) continue;
+      const queue = [{ c: roles.drop.c, r: roles.drop.r }];
+      const seen = new Set();
+      while (queue.length) {
+        const cell = queue.shift();
+        const key = cell.c + '|' + cell.r;
+        if (seen.has(key) || !inGrid(cell.c, cell.r)) continue;
+        seen.add(key);
+        const here = deviceAt(cell.c, cell.r);
+        if (here === adultPen) return true;
+        const bc = beltCell(cell.c, cell.r);
+        if (!bc) continue;
+        const belts = [];
+        if (bc.h) belts.push(bc.h);
+        if (bc.v && bc.v !== bc.h) belts.push(bc.v);
+        for (const belt of belts) {
+          const v = DIR.vec[belt.dir];
+          const next = { c: cell.c + v.x, r: cell.r + v.y };
+          if (deviceAt(next.c, next.r) === adultPen) return true;
+          if (hasBelt(next.c, next.r)) queue.push(next);
+        }
+      }
+    }
+    return false;
+  }
+
+  /* ===================== 퀘스트(무전) ===================== */
+  const QCFG = G.QUEST_CONFIG || { SPAWN_INTERVAL: 180, MAX_ACTIVE: 3, STATIC_TIME: 1.6 };
+  function round10(n) { return Math.max(10, Math.round(n / 10) * 10); }
+  function colonyTier() { return S.colonyTier || 0; }
+  function statOK(data, sf) {
+    if (!sf) return true;
+    return ((data && data.stats && data.stats[sf.key]) || 0) >= sf.min;
+  }
+  // 납품 가능 수량 집계 (자원 카운터 / 창고 화물 / 우리 속 실장석)
+  function deliverableCount(item, sf) {
+    if (item === '실장푸드') return Math.floor(S.food || 0);
+    if (item === '짓소산 푸드') return Math.floor(S.jissoFood || 0);
+    if (item === '우마이푸드') return Math.floor(S.umaiFood || 0);
+    if (item === '다이어트푸드') return Math.floor(S.dietFood || 0);
+    if (item === '운치') return Math.floor(S.unchi || 0);
+    if (item === '조미료') return Math.floor(S.seasoning || 0);
+    if (G.CREATURES[item]) {
+      let n = 0;
+      for (const pen of G.Pens.allPens()) for (const c of pen.creatures) if (c.type === item && statOK(c, sf)) n++;
+      return n;
+    }
+    const list = S.warehouse[item];
+    return list ? list.filter(d => statOK(d, sf)).length : 0;
+  }
+  function consumeDeliverable(item, n, sf) {
+    const counters = { 실장푸드: 'food', '짓소산 푸드': 'jissoFood', 우마이푸드: 'umaiFood', 다이어트푸드: 'dietFood', 운치: 'unchi', 조미료: 'seasoning' };
+    if (counters[item]) { S[counters[item]] = Math.max(0, (S[counters[item]] || 0) - n); return; }
+    if (G.CREATURES[item]) {
+      let left = n;
+      for (const pen of G.Pens.allPens()) {
+        pen.creatures = pen.creatures.filter(c => { if (left > 0 && c.type === item && statOK(c, sf)) { left--; return false; } return true; });
+        if (left <= 0) break;
+      }
+      return;
+    }
+    const list = S.warehouse[item];
+    if (list) { let left = n; S.warehouse[item] = list.filter(d => { if (left > 0 && statOK(d, sf)) { left--; return false; } return true; }); }
+  }
+  // 단체/티어에 맞는 퀘스트 1개 생성
+  const QUEST_LOW_CREATURE_CAP = new Set(['자실장', '엄지', '구더기']);
+  function makeQuest(orgKey) {
+    const org = G.QUEST_ORGS[orgKey]; if (!org) return null;
+    const tier = colonyTier();
+    const pool = org.reqs.filter(r => (r.tier || 0) <= tier);
+    if (!pool.length) return null;
+    const req = pool[Math.floor(Math.random() * pool.length)];
+    const scale = 1 + tier * 0.6;
+    let n = round10((req.qty || 10) * scale * (0.85 + Math.random() * 0.4));
+    // 자실장/엄지/구더기(저급 실장석)는 최대 30마리까지만 요구
+    if (QUEST_LOW_CREATURE_CAP.has(req.item)) n = Math.min(n, 30);
+    const sf = req.stat ? { key: req.stat.key, min: Math.round(req.stat.min * (1 + tier * 0.5)) } : null;
+    const reward = computeReward(org, req, n, tier);
+    const line = pickDialogue(org.lines);
+    return {
+      id: G.uid(), org: orgKey, item: req.item, n, stat: sf,
+      accepted: false, rewardText: reward.text, reward,
+      line: line.text,
+    };
+  }
+  function pickDialogue(list, fallback) {
+    const arr = Array.isArray(list) ? list : [];
+    const picked = arr.length ? arr[Math.floor(Math.random() * arr.length)] : fallback;
+    if (picked && typeof picked === 'object') return { text: picked.text || '' };
+    return { text: String(picked || '') };
+  }
+  // 요구 물자 1개당 판매가(기준 스탯). 보상 하한 계산용.
+  function questItemSellUnit(item) {
+    const p = (G.Creatures && G.Creatures.priceOf) ? G.Creatures.priceOf(item, {}) : 0;
+    return Math.max(1, Math.round(p || 0));
+  }
+  function computeReward(org, req, n, tier) {
+    const unit = req.unit || 8;
+    // 보상은 요구 물자 판매가의 최소 2배 이상 (물자를 그냥 파는 것보다 항상 이득)
+    const minMoney = Math.round(2 * questItemSellUnit(req.item) * n);
+    const baseMoney = Math.max(Math.round(n * unit * (1 + tier * 0.4)), minMoney);
+    switch (org.reward) {
+      case 'money_big':   { const m = Math.max(Math.round(baseMoney * 1.8), minMoney); return { kind: 'money', money: m, text: '💰 ' + m.toLocaleString() }; }
+      case 'money_meat': {
+        if (Math.random() < 0.4) {
+          let m = round10(n * 1.5);
+          const meatUnit = questItemSellUnit('실장육');
+          if (meatUnit * m < minMoney) m = round10(Math.ceil(minMoney / meatUnit));   // 고기 보상도 판매가 2배 이상 보장
+          return { kind: 'meat', meatType: '실장육', meatN: m, text: '🍖 실장육 ' + m + '개' };
+        }
+        const m = Math.max(Math.round(baseMoney * 1.3), minMoney);
+        return { kind: 'money', money: m, text: '💰 ' + m.toLocaleString() };
+      }
+      case 'research_power': {
+        if (Math.random() < 0.5) { const r = 1 + Math.floor(Math.random() * 5); return { kind: 'research', research: r, text: '🔬 연구력 영구 +' + r }; }
+        const p = 5 + Math.max(0, tier - 1) * 5; return { kind: 'power', power: p, text: '⚡ 전력 영구 +' + p };
+      }
+      case 'scrap_power': {
+        const p = 10 + Math.floor(Math.random() * 21);
+        const scrap = Math.max(10, round10(baseMoney / 8));
+        return { kind: 'scrap_power', scrap, power: p, text: '철조각 ' + scrap.toLocaleString() + '개 · ⚡ 영구 +' + p };
+      }
+      default: return { kind: 'money', money: baseMoney, text: '💰 ' + baseMoney.toLocaleString() };
+    }
+  }
+  function spawnQuest() {
+    if (S.quests.length >= (QCFG.MAX_ACTIVE || 3)) return;
+    const tier = colonyTier();
+    const keys = Object.keys(G.QUEST_ORGS).filter(k => {
+      const org = G.QUEST_ORGS[k];
+      if ((org.minTier || 0) > tier) return false;
+      return k === 'vault44' || !(S.quests || []).some(q => q.org === k);
+    });
+    if (!keys.length) return;
+    // 가중 랜덤(rare 단체는 weight 낮음)
+    let totalW = 0; for (const k of keys) totalW += (G.QUEST_ORGS[k].weight || 1);
+    let r = Math.random() * totalW, pick = keys[0];
+    for (const k of keys) { r -= (G.QUEST_ORGS[k].weight || 1); if (r <= 0) { pick = k; break; } }
+    const q = makeQuest(pick);
+    if (q) { S.quests.push(q); radioIn(G.QUEST_ORGS[pick].name + ': ' + q.line, pick, q.item, q.n); }
+  }
+  function tickQuests(dt) {
+    if (S.screen !== 'factory' && S.screen !== 'park') return;
+    if (!S.introDone) return;   // 인트로(콜로니 T1) 전에는 퀘스트 없음
+    S.questTimer = (S.questTimer || 0) + dt;
+    if (S.questTimer >= (QCFG.SPAWN_INTERVAL || 180)) {
+      S.questTimer = 0;
+      if (S.quests.length < (QCFG.MAX_ACTIVE || 3)) spawnQuest();
+    }
+  }
+  function acceptQuest(id) {
+    const q = S.quests.find(x => x.id === id); if (!q || q.accepted) return;
+    q.accepted = true; G.Assets.playSfx('click');
+  }
+  function rejectQuest(id) {
+    const q = S.quests.find(x => x.id === id); if (!q || q.accepted) return;
+    S.quests = S.quests.filter(x => x !== q);
+    G.Assets.playSfx('remove');
+  }
+  function questReady(q) { return deliverableCount(q.item, q.stat) >= q.n; }
+  function completeQuest(id) {
+    const q = S.quests.find(x => x.id === id); if (!q) return;
+    if (!q.accepted) { G.UI.flash && G.UI.flash('먼저 수락하세요'); return; }
+    if (!questReady(q)) { G.UI.flash && G.UI.flash('납품 재료가 부족합니다'); return; }
+    consumeDeliverable(q.item, q.n, q.stat);
+    applyQuestReward(q.reward);
+    S.quests = S.quests.filter(x => x !== q);
+    const org = G.QUEST_ORGS[q.org];
+    const done = pickDialogue(org && org.done, '고맙다.').text;
+    radioIn((org ? org.name : '') + ': ' + done, q.org);
+    G.Assets.playSfx('sell');
+  }
+  function applyQuestReward(rw) {
+    if (!rw) return;
+    if (rw.money) { S.money += rw.money; S.soldValue = (S.soldValue || 0) + rw.money; }
+    if (rw.power) S.powerBonus = (S.powerBonus || 0) + rw.power;
+    if (rw.research) S.researchBonus = (S.researchBonus || 0) + rw.research;
+    if (rw.scrap) {
+      if (!S.warehouse['철조각']) S.warehouse['철조각'] = [];
+      for (let i = 0; i < rw.scrap; i++) S.warehouse['철조각'].push(resourceCargoData('철조각'));
+    }
+    if (rw.kind === 'meat' && rw.meatN) {
+      if (!S.warehouse[rw.meatType]) S.warehouse[rw.meatType] = [];
+      for (let i = 0; i < rw.meatN; i++) S.warehouse[rw.meatType].push(G.Creatures.makeProduct(rw.meatType, { stats: { 육질: 30, 개념: 0, 크기: 10 } }));
+    }
+  }
+  // 단체 무전: 치지직 효과 후 하단 대사창 출력
+  function radioIn(text, orgKey, item, n) {
+    const org = orgKey && G.QUEST_ORGS ? G.QUEST_ORGS[orgKey] : null;
+    if (G.UI && G.UI.showRadio) G.UI.showRadio(text, { name: org ? org.name : '무전', midori: false, orgKey, item, n });
+    else if (G.UI && G.UI.midoriRadio) G.UI.midoriRadio(text);
+  }
+  // 콜로니 T1 달성 시 인트로 + 첫 퀘스트(44방공호 실장육 50)
+  function triggerIntro() {
+    if (S.introDone) return;
+    S.introDone = true; S.questTimer = 0;
+    const first = (G.DIALOGUES && G.DIALOGUES.firstVault44Quest) || {};
+    // 첫 퀘스트: 44방공호 실장육 50
+    const q = { id: G.uid(), org: 'vault44', item: first.item || '실장육', n: first.n || 50, stat: null, accepted: false,
+      reward: { kind: 'money', money: first.rewardMoney || 8000, text: first.rewardText || '💰 8,000' }, rewardText: first.rewardText || '💰 8,000',
+      line: first.line || '44방공호다. 첫 거래로 실장육 50개를 보내라. 둥지가 굶고 있다.' };
+    S.quests.push(q);
+    radioIn(q.line, 'vault44', q.item, q.n);
+    window.setTimeout(() => {
+      if (G.UI && G.UI.midoriRadio) G.UI.midoriRadio((G.DIALOGUES && G.DIALOGUES.colonyTier1Midori) || [], { long: true, emotion: 'laziness' });
+    }, 8500);
+  }
+  function questOrgName(q) { const o = G.QUEST_ORGS[q.org]; return o ? o.name : q.org; }
+  function questHasAny() { return (S.quests || []).length > 0; }
+  function questsForUI() {
+    return (S.quests || []).map(q => ({
+      id: q.id, org: questOrgName(q), color: (G.QUEST_ORGS[q.org] || {}).color || '#ccc',
+      item: q.item, n: q.n, have: deliverableCount(q.item, q.stat), stat: q.stat,
+      accepted: q.accepted, ready: questReady(q), rewardText: q.rewardText, line: q.line,
+    }));
+  }
 
   // 조미료 가격: 1분마다 직전가격 ±1~SWING 변동
   function tickEconomy(dt) {
@@ -2872,11 +3329,18 @@ G.Factory = (function () {
       const d = (Math.random() < 0.5 ? -1 : 1) * (1 + Math.floor(Math.random() * C.SEASONING_SWING));
       S.seasoningPrice = Math.max(C.SEASONING_MIN, (S.seasoningPrice || C.SEASONING_BASE) + d);
     }
-    updateRaidSpawnQueue(dt);
+    if (!(G.UI && G.UI.isBasicTutorialActive && G.UI.isBasicTutorialActive())) updateRaidSpawnQueue(dt);
   }
 
   /* ---- 외부 침입(가족 리젠) / 약탈 ------------------------------------ */
+  function raidStartTime() {
+    return S.difficulty === 'breeding' ? 2400 : (C.RAID_START || 1200);
+  }
+  function raidCountMult() {
+    return S.difficulty === 'breeding' ? 0.5 : 1;
+  }
   function tickInvasion(dt) {
+    if (G.UI && G.UI.isBasicTutorialActive && G.UI.isBasicTutorialActive()) return;
     S.playTime = (S.playTime || 0) + dt;
     // 외부 실장석 가족 리젠: 가끔 밖에서 기어들어와 배회 실장석이 됨
     if (!S.intrudeIn) S.intrudeIn = C.INTRUDE_INTERVAL_MIN + Math.random() * (C.INTRUDE_INTERVAL_MAX - C.INTRUDE_INTERVAL_MIN);
@@ -2886,13 +3350,14 @@ G.Factory = (function () {
       if (S.wanderers.length < C.INTRUDE_WANDER_CAP) spawnIntruderFamily();
     }
     // 약탈: 10분 경과 후 5~10분 간격으로 무리가 몰려옴
-    if (S.playTime >= C.RAID_START) {
+    if (S.playTime >= raidStartTime()) {
       if (!S.raidIn) scheduleNextRaid(30 + Math.random() * 90);   // 첫 약탈은 곧바로
       if (!S.raidPoint) S.raidPoint = raidSpawnPoint();
       if (S.raidIn > 30 && S.raidWarned) S.raidWarned = false;
       S.raidIn -= dt;
       if (!S.raidWarned && S.raidIn > 0 && S.raidIn <= 30) {
         S.raidWarned = true;
+        if (G.UI && G.UI.onTutorialRaidWarning) G.UI.onTutorialRaidWarning();
         if (G.UI.flash) G.UI.flash('⚠ ' + raidDirectionText(S.raidPoint) + '에서 침입 분충들 대량 발생중!');
       }
       if (S.raidIn <= 0) {
@@ -2907,9 +3372,14 @@ G.Factory = (function () {
     S.raidWarned = false;
   }
   function triggerRaidCountdown() {
-    S.playTime = Math.max(S.playTime || 0, C.RAID_START || 0);
+    if (G.UI && G.UI.isBasicTutorialActive && G.UI.isBasicTutorialActive()) {
+      G.UI.flash && G.UI.flash('기초 튜토리얼 중에는 레이드가 시작되지 않습니다.');
+      return;
+    }
+    S.playTime = Math.max(S.playTime || 0, raidStartTime());
     scheduleNextRaid(30);
     S.raidWarned = true;
+    if (G.UI && G.UI.onTutorialRaidWarning) G.UI.onTutorialRaidWarning();
     if (G.UI.flash) G.UI.flash('⚠ ' + raidDirectionText(S.raidPoint) + '에서 침입 분충들 대량 발생중!');
   }
   // 치트: 모든 침입/약탈 실장석을 즉시 소멸(대기 중인 레이드 스폰도 취소). 소멸 수 반환.
@@ -3034,6 +3504,7 @@ G.Factory = (function () {
     members.forEach(m => spawnIntruder(m, p.x + (Math.random() - 0.5) * 2, p.y + (Math.random() - 0.5) * 2, {
       goal: { x: goal.x + (Math.random() - 0.5) * 4, y: goal.y + (Math.random() - 0.5) * 4 },
     }));
+    if (G.UI && G.UI.onTutorialWildIntrusion) G.UI.onTutorialWildIntrusion(p);
     if (G.UI.flash) G.UI.flash('야생 실장석 가족이 공장 안으로 기어들어옵니다…');
   }
   // 현재 침입 단계(0~5) — 누적 매출이 임계값을 넘을 때마다 +1
@@ -3105,7 +3576,7 @@ G.Factory = (function () {
   function raidScale() {
     const num = S.raidNum || 0;
     const base = C.RAID_BASE_COUNT || 5, step = C.RAID_COUNT_STEP || 3, max = C.RAID_MAX_COUNT || 50;
-    const count = Math.min(max, base + num * step);
+    const count = Math.max(1, Math.ceil(Math.min(max, base + num * step) * raidCountMult()));
     const rampRaids = Math.ceil((max - base) / step);          // 수가 상한에 닿는 데 걸리는 레이드 수
     const extra = Math.max(0, num - rampRaids);                 // 상한 이후 추가 레이드 수
     const hpScale = 1 + extra * (C.RAID_HP_STEP || 0.15);
@@ -3810,7 +4281,7 @@ G.Factory = (function () {
     }
   }
   function updatePowerGrid() {
-    let total = 0;
+    let total = (S.powerBonus || 0);   // 퀘스트 보상: 영구 전력 가산
     const sources = [];
     for (const b of S.buildings) {
       b.powered = false;
@@ -3864,6 +4335,7 @@ G.Factory = (function () {
     }
     S.power = total;
     S.powerUsed = used;
+    if (G.UI && G.UI.onReformerPowered && S.buildings.some(b => b.type === 'reformer' && b.powered)) G.UI.onReformerPowered();
   }
 
   function updateDevices(dt) {
@@ -3894,7 +4366,7 @@ G.Factory = (function () {
     return n;
   }
   function researchPower() {
-    return labWorkers() * (1 + ((S.upgrades && S.upgrades.카오스연구) || 0));
+    return labWorkers() * (1 + ((S.upgrades && S.upgrades.카오스연구) || 0)) + (S.researchBonus || 0);
   }
   function emitLabMinced(b, src) {
     const minced = G.Creatures.makeProduct('분쇄육', { stats: (src && src.stats) || { 육질: 0, 개념: 0, 크기: 0 } });
@@ -3947,6 +4419,7 @@ G.Factory = (function () {
     if (G.Factory && G.Factory.refreshMenu) refreshMenu();
     G.Assets.playSfx('research');
     if (G.UI && G.UI.flash) G.UI.flash(r.name + ' 연구 완료');
+    if (G.UI && G.UI.onResearchExplain) G.UI.onResearchExplain(r.key);
   }
 
   // 특수장치 효과 ---------------------------------------------------------
@@ -4591,6 +5064,11 @@ G.Factory = (function () {
     // 'birth'(레드포인터), 'feed'(사료분배기)는 각각 updateBirthing / pens가 범위를 조회
   }
   // 포획기: 집게팔이 대상에게 뻗어 한 번에 한 개씩 끌어옴(범위 업그레이드)
+  function catcherTargets(b) {
+    const r = effRangeRect(b);
+    const out = outputCell(b);   // 막 내보낸 개체(출구 칸)는 다시 잡지 않음
+    return S.wanderers.filter(w => !w._dead && !w.data.labor && !w.invade && inRect(r, w.gx, w.gy) && isOwnedCell(Math.floor(w.gx), Math.floor(w.gy)) && !(Math.floor(w.gx) === out.c && Math.floor(w.gy) === out.r));
+  }
   function updateCatcher(b, dt) {
     const cx = b.col + 0.5, cy = b.row + 0.5;
     if (!b.arm) b.arm = { x: cx, y: cy };
@@ -4621,9 +5099,7 @@ G.Factory = (function () {
     b.cd = (b.cd || 0) - dt;
     if (b.cd > 0) return;
     b.cd = 0.25 / electricMult(b);
-    const r = effRangeRect(b);
-    const out = outputCell(b);   // 막 내보낸 개체(출구 칸)는 다시 잡지 않음
-    const inside = S.wanderers.filter(w => !w.data.labor && !w.invade && inRect(r, w.gx, w.gy) && isOwnedCell(Math.floor(w.gx), Math.floor(w.gy)) && !(Math.floor(w.gx) === out.c && Math.floor(w.gy) === out.r));
+    const inside = catcherTargets(b);
     const pool = inside.map(w => w.data);
     let best = null, bd = Infinity;
     for (const w of inside) {
@@ -4748,6 +5224,7 @@ G.Factory = (function () {
       // 모든 부모(성체실장/독라/사육실장)는 점액 덩어리를 낳음
       const child = G.Creatures.breed(b.worker.stats, '점액덩어리');
       applySpeakerBirthBuff(b, child);   // 태교 스피커 범위면 육질/개념 확률 +1
+      if (G.UI && G.UI.markTutorialAction) G.UI.markTutorialAction('made:점액덩어리');
       b.birthTimer = 0; if (!emitCreature(b, child)) b.output = child;
       b.births = (b.births || 0) + 1;
       b.speech = '뎃데로게~'; b.speechT = 1.6; playDeviceSfx('birth', b);
@@ -4772,6 +5249,7 @@ G.Factory = (function () {
     b.state = 'producing'; b.washTimer += dt;
     if (b.washTimer >= C.WASH_TIME / workerMult(b)) {
       const res = G.Creatures.washClassify(b.item);
+      if (G.UI && G.UI.markTutorialAction) G.UI.markTutorialAction('made:' + res.type);
       b.item = null; b.washTimer = 0; b.state = 'ready';
       if (!emitCreature(b, res)) b.output = res; playDeviceSfx('wash', b);
     }
@@ -4862,32 +5340,45 @@ G.Factory = (function () {
   function updateMixer(b, dt) {
     if (b.outputFood) { if (bufferCargo(b, b.outputFood)) b.outputFood = null; else return; }
     const need = C.MIX_FOOD_NEED || 50;
+    const conc = C.MIX_CONCENTRATE || 5;
     const recipeA = b.slotMeat && (b.unchiN || 0) >= C.MIX_UNCHI;        // 분쇄육+운치 → 실장푸드
     const recipeB = b.slotAcid && (b.foodN || 0) >= need;               // 짓소산+실장푸드 → 짓소산 푸드
     const recipeC = b.slotSeasoning && (b.foodN || 0) >= need;          // 조미료+실장푸드 → 우마이푸드
     const recipeD = b.slotScrap && (b.foodN || 0) >= need;              // 철조각+실장푸드 → 다이어트푸드
-    if (recipeA || recipeB || recipeC || recipeD) {
+    const recipeE = !b.slotMeat && (b.unchiN || 0) >= conc;             // 운치5 → 농축운치 (분쇄육 없을 때)
+    const recipeF = (b.cA || 0) >= conc;                                // 농축운치5 → 고농축운치
+    const recipeG = (b.cB || 0) >= conc;                                // 고농축운치5 → 초고농축운치
+    if (recipeA || recipeB || recipeC || recipeD || recipeE || recipeF || recipeG) {
       b.state = 'producing'; b.timer += dt;
       if (b.timer >= G.DEVICES.mixer.time / workerMult(b)) {
         if (outRoom(b) > 0) {
           const out = recipeA ? makeFoodCargo(b.slotMeat)
             : recipeB ? makeJissoFoodCargo()
             : recipeC ? makeSpecialFoodCargo('우마이푸드')
-            : makeSpecialFoodCargo('다이어트푸드');
+            : recipeD ? makeSpecialFoodCargo('다이어트푸드')
+            : recipeE ? makeResourceCargo('농축운치')
+            : recipeF ? makeResourceCargo('고농축운치')
+            : makeResourceCargo('초고농축운치');
           if (bufferCargo(b, out)) {
             if (recipeA) { b.slotMeat = null; b.unchiN = 0; }
             else if (recipeB) { b.slotAcid = null; b.foodN = 0; }
             else if (recipeC) { b.slotSeasoning = null; b.foodN = 0; }
-            else { b.slotScrap = null; b.foodN = 0; }
+            else if (recipeD) { b.slotScrap = null; b.foodN = 0; }
+            else if (recipeE) { b.unchiN = (b.unchiN || 0) - conc; }
+            else if (recipeF) { b.cA = (b.cA || 0) - conc; }
+            else { b.cB = (b.cB || 0) - conc; }
             b.timer = 0; b.state = 'ready';
             playDeviceSfx('wash', b);
           }
         }
       }
-    } else { b.state = (b.slotMeat || (b.unchiN || 0) || b.slotAcid || b.slotSeasoning || b.slotScrap || (b.foodN || 0)) ? 'ready' : 'idle'; b.timer = 0; }
+    } else { b.state = (b.slotMeat || (b.unchiN || 0) || b.slotAcid || b.slotSeasoning || b.slotScrap || (b.cA || 0) || (b.cB || 0) || (b.foodN || 0)) ? 'ready' : 'idle'; b.timer = 0; }
   }
   function makeSpecialFoodCargo(type) {
     return { id: G.uid(), type, isProduct: false, amount: 50, stats: { 육질: 0, 개념: 0, 크기: 0 } };
+  }
+  function makeResourceCargo(type) {
+    return { id: G.uid(), type, isProduct: false, amount: 1, stats: { 육질: 0, 개념: 0, 크기: 0 } };
   }
   function makeFoodCargo(meat) {
     const q = meat && meat.stats ? Math.max(0, meat.stats.육질 || 0) : 0;
@@ -4949,41 +5440,47 @@ G.Factory = (function () {
       크기: sum.크기 / n,
     };
   }
+  // 재료 슬롯(ing)이 충족됐는지 — seasoning은 전역 비축(S.seasoning), 나머지는 b.mats 합계
+  function cookIngAvail(b, ing) {
+    if (ing.seasoning) return (S.seasoning || 0) >= ing.n;
+    let sum = 0; for (const t of ing.any) sum += (b.mats[t] || 0);
+    return sum >= ing.n;
+  }
+  function cookMenuReady(b, key) {
+    const r = G.DEVICES.cookery.cook[key];
+    return !!r && r.ing.every(ing => cookIngAvail(b, ing));
+  }
+  // ing 소모 + (stat 재료면) 소모한 재료의 평균 스탯 반환
+  function consumeCookIng(b, ing) {
+    if (ing.seasoning) { S.seasoning = Math.max(0, (S.seasoning || 0) - ing.n); return null; }
+    let need = ing.n; const sum = { 육질: 0, 개념: 0, 크기: 0 }; let taken = 0;
+    for (const t of ing.any) {
+      while (need > 0 && (b.mats[t] || 0) > 0) {
+        b.mats[t] -= 1; need -= 1; taken += 1;
+        const list = b.matStats && b.matStats[t];
+        const s = (list && list.shift()) || {};
+        sum.육질 += s.육질 || 0; sum.개념 += s.개념 || 0; sum.크기 += s.크기 || 0;
+      }
+    }
+    if (!ing.stat || taken === 0) return null;
+    return { 육질: sum.육질 / taken, 개념: sum.개념 / taken, 크기: sum.크기 / taken };
+  }
   function updateCookery(b, dt) {
     const def = G.DEVICES.cookery;
     if (!b.mats) b.mats = {};
-    function cookMat(key, r) { return r.mat || key; }
-    function hasCookSeasoning(r) {
-      if (!r.seasoning || r.seasoning === '조미료') return (S.seasoning || 0) >= 1;
-      return (b.mats[r.seasoning] || 0) >= 1;
-    }
-    if (!b.cooking) {
-      for (const key in def.cook) {
-        const r = def.cook[key], mat = cookMat(key, r);
-        const enoughFood = !r.food || (b.mats.실장푸드 || 0) >= r.food;
-        if ((b.mats[mat] || 0) >= r.n && enoughFood && hasCookSeasoning(r)) { b.cooking = key; b.timer = 0; break; }
+    const key = b.menu;   // 메뉴를 직접 선택해야 조리 시작
+    if (!key || !def.cook[key] || !cookMenuReady(b, key)) { b.cooking = null; b.state = (key ? 'idle' : 'idle'); b.timer = 0; return; }
+    b.cooking = key;
+    b.state = 'producing'; b.timer = (b.timer || 0) + dt;
+    if (b.timer >= def.time / workerMult(b)) {
+      if (outRoom(b) > 0) {
+        const r = def.cook[key];
+        let stats = { 육질: 0, 개념: 0, 크기: 0 };
+        for (const ing of r.ing) { const s = consumeCookIng(b, ing); if (s) stats = s; }
+        bufferCargo(b, G.Creatures.makeProduct(r.out, { stats }));
+        b.timer = 0; b.cooking = null; b.state = 'ready'; playDeviceSfx('sell', b);
       }
     }
-    if (b.cooking) {
-      const r = def.cook[b.cooking];
-      if (!r) { b.cooking = null; b.timer = 0; b.state = 'idle'; return; }   // 제거된 레시피(예: 옛 짓소산) 안전 처리
-      const mat = cookMat(b.cooking, r);
-      const enoughFood = !r.food || (b.mats.실장푸드 || 0) >= r.food;
-      if ((b.mats[mat] || 0) < r.n || !enoughFood || !hasCookSeasoning(r)) { b.cooking = null; b.timer = 0; b.state = 'idle'; return; }
-      b.state = 'producing'; b.timer += dt;
-      if (b.timer >= def.time / workerMult(b)) {
-        if (outRoom(b) > 0) {
-          const stats = takeCookeryStats(b, mat, r.n);
-          b.mats[mat] -= r.n;
-          if (r.food) b.mats.실장푸드 -= r.food;
-          if (!r.seasoning || r.seasoning === '조미료') S.seasoning -= 1;
-          else b.mats[r.seasoning] -= 1;
-          const outData = r.out === '짓소산 푸드' ? makeJissoFoodCargo() : G.Creatures.makeProduct(r.out, { stats });
-          bufferCargo(b, outData);
-          b.cooking = null; b.timer = 0; b.state = 'ready'; playDeviceSfx('sell', b);
-        }
-      }
-    } else b.state = 'idle';
   }
 
   // 포장기(가공): 분쇄육1+철조각1→통조림1, 실장육1+철조각1→진공포장1
@@ -5132,6 +5629,8 @@ G.Factory = (function () {
         e.preventDefault();
         closeAuxPanels();
         moveKeys[lk] = true;
+        if (G.UI && G.UI.markTutorialAction) G.UI.markTutorialAction('cameraMove');
+        if (G.UI && G.UI.markTutorialAction) G.UI.markTutorialAction('camera:' + lk);
         return;
       }
       if (k === 'f' || k === 'F') {
@@ -5142,6 +5641,7 @@ G.Factory = (function () {
       }
       if (k === 'r' || k === 'R') {
         closeAuxPanels();
+        if (G.UI && G.UI.markTutorialAction) G.UI.markTutorialAction('rotateShortcut');
         if (currentTool && G.DEVICES[currentTool].rotatable) { ghostDir = (ghostDir + 1) % 4; G.Assets.playSfx('rotate'); }
         else if (moveMode) {
           moving.forEach(m => {
@@ -5164,6 +5664,7 @@ G.Factory = (function () {
       } else if (k === 'Delete' || k === 'Backspace') {
         e.preventDefault();
         closeAuxPanels();
+        if (G.UI && G.UI.markTutorialAction) G.UI.markTutorialAction('deleteShortcut');
         if (selectedPenCreature) {
           const sold = sellPenCreatureRef(selectedPenCreature);
           selectedPenCreature = null;
@@ -5171,15 +5672,19 @@ G.Factory = (function () {
         } else if (S.selection.length || wallSelection.length) { snapshot(); deleteSelection(); }
         else if (mouseCell) { snapshot(); deleteFloorAt(mouseCell); }   // 바닥 화물/배회 제거
       } else if (k === 'm' || k === 'M') {
+        if (G.UI && G.UI.markTutorialAction) G.UI.markTutorialAction('moveShortcut');
         e.preventDefault(); closeAuxPanels(); enterMove();
       } else if (k === 'e' || k === 'E') {
+        if (G.UI && G.UI.markTutorialAction) G.UI.markTutorialAction('buildShortcut');
         e.preventDefault(); closeAuxPanels(); activeCat = 'logistics'; renderMenuItems(); highlightCat(); selectTool('belt');
       } else if (k === 'q' || k === 'Q') {
+        if (G.UI && G.UI.markTutorialAction) G.UI.markTutorialAction('wallShortcut');
         e.preventDefault(); closeAuxPanels(); selectTool('wall'); setStatus('벽 모드: 모서리 점에서 시작해 수평/수직으로 드래그 설치. 드래그 선택 후 Del=벽 삭제.');
       } else if (k === 'x' || k === 'X') {
         if (!penEraseKey) { penEraseKey = true; setStatus('우리 철거: X를 누른 채 드래그한 범위의 우리 칸을 철거합니다.'); }
       } else if (/^[0-9]$/.test(k)) {
         e.preventDefault();
+        if (G.UI && G.UI.markTutorialAction) G.UI.markTutorialAction('numberShortcut');
         if (hoveredMenuType) assignHotkey(k, hoveredMenuType);   // 메뉴에 올린 채 숫자 = 지정
         else if (typeForKey(k)) selectTool(typeForKey(k));        // 그냥 숫자 = 선택
       }
@@ -5430,7 +5935,14 @@ G.Factory = (function () {
     canvas.addEventListener('mouseleave', () => { mouseCell = null; hoverBuilding = null; });
 
     // 휠 스크롤=확대/축소, 휠(중간)버튼 드래그=화면 이동
-    canvas.addEventListener('wheel', (e) => { e.preventDefault(); closeAuxPanels(); zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.12 : 1 / 1.12); }, { passive: false });
+    canvas.addEventListener('wheel', (e) => {
+      e.preventDefault(); closeAuxPanels();
+      if (G.UI && G.UI.markTutorialAction) {
+        G.UI.markTutorialAction('zoom');
+        G.UI.markTutorialAction(e.deltaY < 0 ? 'zoomIn' : 'zoomOut');
+      }
+      zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.12 : 1 / 1.12);
+    }, { passive: false });
     canvas.addEventListener('mousedown', (e) => {
       if (e.button === 1) { e.preventDefault(); closeAuxPanels(); panning = true; panStart = { x: e.clientX, y: e.clientY, camx: cam.x, camy: cam.y }; return; }
       if (e.button !== 0) return;
@@ -5555,7 +6067,7 @@ G.Factory = (function () {
       if (!G.CREATURES[w.data.type] || !isOwnedCell(Math.floor(w.gx), Math.floor(w.gy))) continue;
       const d = hitCreatureSprite(w.data.type, w.gx, w.gy, gx, gy);
       if (d == null) continue;
-      if (d < bd) { bd = d; best = { data: w.data, fgx: w.gx, fgy: w.gy, remove: () => { S.wanderers = S.wanderers.filter(x => x !== w); } }; }
+      if (d < bd) { bd = d; best = { data: w.data, wild: !!w.wild, fgx: w.gx, fgy: w.gy, remove: () => { S.wanderers = S.wanderers.filter(x => x !== w); } }; }
     }
     for (const cg of S.cargo) {
       if (!G.CREATURES[cg.data.type] || !isOwnedCell(Math.floor(cg.gx), Math.floor(cg.gy))) continue;
@@ -5591,6 +6103,7 @@ G.Factory = (function () {
       const cell = screenToCell(ev.clientX, ev.clientY);
       if (cell && isOwnedCell(cell.col, cell.row)) dropCreatureAt(cell, data);
       else spawnWanderer(data, hit.fgx, hit.fgy);
+      if (hit.wild && G.UI && G.UI.markTutorialAction) G.UI.markTutorialAction('wildMoved');
     };
     window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
   }
@@ -5884,6 +6397,7 @@ G.Factory = (function () {
     drawSelectRect();
     drawPenEraseGhost();
     drawRaidWarning();
+    drawTutorialGuide();
     drawCreatureOverlays();
     ctx.restore();
 
@@ -5893,6 +6407,59 @@ G.Factory = (function () {
     updateTurretPanel();
     updateLaborPanel();
     updateWallPanel();
+  }
+
+  function drawTutorialGuide() {
+    const guide = G.UI && G.UI.tutorialGuide ? G.UI.tutorialGuide() : null;
+    if (!guide || S.screen !== 'factory') return;
+    const pulse = 0.65 + Math.abs(Math.sin(performance.now() * 0.005)) * 0.35;
+    ctx.save();
+    ctx.strokeStyle = '#ffd84d';
+    ctx.fillStyle = 'rgba(255,216,77,0.16)';
+    ctx.lineWidth = 4 / cam.zoom;
+    ctx.setLineDash([10 / cam.zoom, 7 / cam.zoom]);
+    ctx.globalAlpha = pulse;
+    const types = guide.buildings || [];
+    for (const b of S.buildings) {
+      if (!types.includes(b.type)) continue;
+      ctx.fillRect(b.col * CELL, b.row * CELL, b.w * CELL, b.h * CELL);
+      ctx.strokeRect(b.col * CELL + 2, b.row * CELL + 2, b.w * CELL - 4, b.h * CELL - 4);
+    }
+    if (guide.adjacentPen != null) {
+      const pens = G.Pens.allPens();
+      const pen = pens[guide.adjacentPen] || pens[0];
+      if (pen) {
+        const size = guide.size || { w: 1, h: 1 };
+        const col = pen.col + pen.w + 1;
+        const row = pen.row + Math.max(0, Math.floor((pen.h - size.h) / 2));
+        ctx.fillRect(col * CELL, row * CELL, size.w * CELL, size.h * CELL);
+        ctx.strokeRect(col * CELL + 2, row * CELL + 2, size.w * CELL - 4, size.h * CELL - 4);
+      }
+    }
+    if (guide.betweenPens) {
+      const pens = G.Pens.allPens();
+      const a = pens[0], b = pens[1];
+      if (a && b) {
+        const ac = { x: a.col + a.w / 2, y: a.row + a.h / 2 };
+        const bc = { x: b.col + b.w / 2, y: b.row + b.h / 2 };
+        const horizontal = Math.abs(bc.x - ac.x) >= Math.abs(bc.y - ac.y);
+        let col, row, w, h;
+        if (horizontal) {
+          w = 3; h = 1;
+          col = Math.round((ac.x + bc.x) / 2 - w / 2);
+          const overlap0 = Math.max(a.row, b.row), overlap1 = Math.min(a.row + a.h, b.row + b.h);
+          row = overlap1 > overlap0 ? Math.floor((overlap0 + overlap1 - 1) / 2) : Math.round((ac.y + bc.y) / 2 - 0.5);
+        } else {
+          w = 1; h = 3;
+          row = Math.round((ac.y + bc.y) / 2 - h / 2);
+          const overlap0 = Math.max(a.col, b.col), overlap1 = Math.min(a.col + a.w, b.col + b.w);
+          col = overlap1 > overlap0 ? Math.floor((overlap0 + overlap1 - 1) / 2) : Math.round((ac.x + bc.x) / 2 - 0.5);
+        }
+        ctx.fillRect(col * CELL, row * CELL, w * CELL, h * CELL);
+        ctx.strokeRect(col * CELL + 2, row * CELL + 2, w * CELL - 4, h * CELL - 4);
+      }
+    }
+    ctx.restore();
   }
 
   function drawBelt(b) {
@@ -6009,7 +6576,7 @@ G.Factory = (function () {
     else if (b.type === 'techica') drawn = drawTechicaDevice(b, x, y);
     else if (POWER_POLES.has(b.type)) drawn = drawPowerPoleDevice(b, x, y);
     else if (b.type === 'lab') drawn = G.Assets.drawDeviceSpriteNamed(ctx, (b.state === 'producing') ? 'lab_start.png' : 'lab_ready.png', x + 1, y + 1, w - 2, h - 2);
-    else if (b.type === 'pointer' || b.type === 'sorter' || b.type === 'washbasin' || b.type === 'deshell') drawn = drawRotatedDeviceSprite(b, x, y, w, h);
+    else if (b.type === 'pointer' || b.type === 'sorter' || b.type === 'washbasin' || b.type === 'deshell') drawn = drawRotatedDeviceSprite(b, x, y, w, h, frameIdx);
     else if (b.type === 'skewer') drawn = drawSkewerDevice(b, x, y);
     else if (b.type === 'turret' || b.type === 'sniper' || b.type === 'mortar') drawn = drawTurretDevice(b, x, y);
     else drawn = G.Assets.drawDeviceSprite(ctx, b.type, x + 1, y + 1, w - 2, h - 2, frameIdx);
@@ -6019,8 +6586,9 @@ G.Factory = (function () {
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(def.name + (b.type === 'birthing' && !b.worker ? '(빈)' : ''), x + w / 2, y + h / 2);
     }
     if (dropHoverId === b.id) { ctx.strokeStyle = '#7fe'; ctx.lineWidth = 3; ctx.strokeRect(x + 2, y + 2, w - 4, h - 4); }
-    if (hasElectricBoost(b) || (needsRequiredPower(b) && b.powered)) drawPowerBadge(x, y, w);
-    else if (powerBlocked(b)) drawPowerMissingBadge(x, y, w);
+    if (b.type === 'colony' && S.colonyUpgrade) {
+      drawProgressBar(x, y + h - 6, w, 1 - S.colonyUpgrade.remain / S.colonyUpgrade.total, 'life');
+    }
 
     if (b.type === 'washbasin') {
       markEdge(outputCell(b), '출', '#fc5');
@@ -6074,17 +6642,15 @@ G.Factory = (function () {
     } else if (b.type === 'cookery') {
       drawProgressBar(x, y + h - 6, w, b.cooking ? b.timer / (def.time / workerMult(b)) : 0, b.state);
       ctx.fillStyle = 'rgba(255,255,255,0.92)'; ctx.font = '9px sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
-      const cook = def.cook; let li = 0;
-      const shownCookMats = new Set();
-      for (const key in cook) {
-        const mat = cook[key].mat || key;
-        if (shownCookMats.has(mat)) continue;
-        shownCookMats.add(mat);
-        const have = (b.mats && b.mats[mat]) || 0;
-        if (have > 0) { ctx.fillText(mat + ' ' + have, x + 4, y + 11 + li * 10); li++; }
-      }
+      // 비축된 재료 종류 표시
+      let li = 0;
+      for (const t in (b.mats || {})) { const have = b.mats[t] || 0; if (have > 0 && li < 4) { ctx.fillText(t + ' ' + have, x + 4, y + 11 + li * 10); li++; } }
       ctx.textAlign = 'center';
-      ctx.fillText('🧂' + Math.floor(S.seasoning) + '/' + (C.SEASONING_MAX || 50), x + w / 2, y + h / 2);
+      const menuName = (b.menu && def.cook[b.menu]) ? def.cook[b.menu].out : '메뉴 미선택';
+      ctx.fillStyle = b.menu ? '#ffe9b0' : '#ff9a8a'; ctx.font = 'bold 10px sans-serif';
+      ctx.fillText('▶ ' + menuName, x + w / 2, y + h / 2 - 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.92)'; ctx.font = '9px sans-serif';
+      ctx.fillText('🧂' + Math.floor(S.seasoning) + '/' + (C.SEASONING_MAX || 50), x + w / 2, y + h / 2 + 11);
       drawWorkerSlots(b, x, y, w);
       drawBufferLabel(b, x, y, w, h);
     } else if (b.type === 'acidgen') {
@@ -6102,7 +6668,6 @@ G.Factory = (function () {
       if (b.type !== 'chaoscharge') drawItem(Object.assign({}, b, { item: b.type === 'jisoucharge' ? b.worker : b.fuel, creatureDirRow: b.type === 'jisoucharge' ? 1 : 0 }), x, y);
       drawBufferLabel(b, x, y, w, h);
     } else if (POWER_POLES.has(b.type)) {
-      if (b.powered) drawPowerBadge(x, y, w);
     } else if (b.type === 'reformer') {
       markEdge(outputCell(b), '출', '#fc5');
       drawProgressBar(x, y + h - 6, w, b.item ? (b.timer || 0) / (C.LABOR_REFORM_TIME || 6) : 0, b.state);
@@ -6114,6 +6679,16 @@ G.Factory = (function () {
       ctx.fillStyle = 'rgba(3, 3, 3, 0.6)'; ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText('창고', x + w / 2, y + h / 2);
       ctx.font = '9px sans-serif'; ctx.fillText('거래창서 판매', x + w / 2, y + h / 2 + 14);
+    } else if (b.type === 'colony') {
+      // 미수락 퀘스트가 있으면 중앙에 깜빡이는 느낌표
+      if ((S.quests || []).some(q => !q.accepted)) {
+        const cx = x + w / 2, cy = y + h / 2, a = 0.55 + 0.45 * Math.abs(Math.sin(G.Assets.frame() * 1.5));
+        ctx.save(); ctx.globalAlpha = a;
+        ctx.font = 'bold 40px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#ffd23a'; ctx.strokeStyle = '#5a3a00'; ctx.lineWidth = 4;
+        ctx.strokeText('❗', cx, cy - 6); ctx.fillText('❗', cx, cy - 6);
+        ctx.restore();
+      }
     } else if (b.type === 'sorter') {
       const lanes = laneInfo(b);
       lanes.forEach((ln, i) => {
@@ -6164,6 +6739,7 @@ G.Factory = (function () {
         ctx.fillStyle = '#fff'; ctx.font = 'bold 14px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('✚', x + w / 2, y + 4);
       }
     }
+    drawDevicePowerBadge(b, x, y, w);
     // 짓소산 생성기 대사는 중심 최상단 기준 아래로 70px 지점에 출력
     if (b.speechT > 0 && b.speech) drawBubble(x + w / 2, b.type === 'acidgen' ? (y + 70) : (b.type === 'techica' ? (y - 42) : (y - 2)), b.speech);
   }
@@ -6182,7 +6758,7 @@ G.Factory = (function () {
     if (b.type === 'slaughter' || b.type === 'deshell') return !!b.item;
     return false;
   }
-  function drawRotatedDeviceSprite(b, x, y, w, h) {
+  function drawRotatedDeviceSprite(b, x, y, w, h, frameIdx) {
     const def = G.DEVICES[b.type];
     const baseW = ((def && def.w) || b.w || 1) * CELL;
     const baseH = ((def && def.h) || b.h || 1) * CELL;
@@ -6190,7 +6766,7 @@ G.Factory = (function () {
     ctx.translate(x + w / 2, y + h / 2);
     if (b.dir === 3) ctx.scale(-1, 1);       // 반대 방향은 회전이 아니라 좌우 대칭
     else if (b.dir !== 1) ctx.rotate((b.dir - 1) * Math.PI / 2); // 위/아래만 회전. 기본 스프라이트 방향: →
-    const ok = G.Assets.drawDeviceSprite(ctx, b.type, -baseW / 2 + 1, -baseH / 2 + 1, baseW - 2, baseH - 2);
+    const ok = G.Assets.drawDeviceSprite(ctx, b.type, -baseW / 2 + 1, -baseH / 2 + 1, baseW - 2, baseH - 2, frameIdx);
     ctx.restore();
     return ok;
   }
@@ -6515,8 +7091,12 @@ G.Factory = (function () {
     ctx.fillText('화물 ' + n + '/10', x + w - 26, by + 7);
     ctx.restore();
   }
+  function drawDevicePowerBadge(b, x, y, w) {
+    if ((POWER_POLES.has(b.type) && b.powered) || hasElectricBoost(b) || (needsRequiredPower(b) && b.powered)) drawPowerBadge(x, y, w);
+    else if (powerBlocked(b)) drawPowerMissingBadge(x, y, w);
+  }
   function drawPowerBadge(x, y, w) {
-    if (drawUiBadgeImage('on.png', x, y)) return;
+    if (drawUiBadgeImage('on.png', x, y, '#42f5d7')) return;
     ctx.save();
     ctx.fillStyle = 'rgba(30,70,90,0.82)';
     ctx.fillRect(x + 4, y + 4, 18, 16);
@@ -6528,22 +7108,30 @@ G.Factory = (function () {
     ctx.restore();
   }
   function drawPowerMissingBadge(x, y, w) {
-    if (drawUiBadgeImage('off.png', x, y)) return;
+    if (drawUiBadgeImage('off.png', x, y, '#ff5a4f')) return;
     ctx.save();
-    ctx.fillStyle = 'rgba(35,38,44,0.88)';
-    ctx.fillRect(x + 4, y + 4, 18, 16);
-    ctx.fillStyle = '#aeb4bd';
+    ctx.fillStyle = 'rgba(90,20,20,0.92)';
+    ctx.strokeStyle = '#ff5a4f';
+    ctx.lineWidth = 2;
+    ctx.fillRect(x + 4, y + 4, 22, 20);
+    ctx.strokeRect(x + 4.5, y + 4.5, 21, 19);
+    ctx.fillStyle = '#ffe3df';
     ctx.font = 'bold 13px sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText('⚡', x + 13, y + 12);
+    ctx.fillText('⚡', x + 15, y + 14);
     ctx.restore();
   }
-  function drawUiBadgeImage(fileName, x, y) {
+  function drawUiBadgeImage(fileName, x, y, accent) {
     const rec = G.Assets.loadImage('assets/images/ui/' + fileName);
     if (!rec || !rec.ok || !rec.img.width) return false;
     ctx.save();
-    ctx.drawImage(rec.img, x + 4, y + 4, 20, 20);
+    ctx.fillStyle = 'rgba(8,12,18,0.82)';
+    ctx.strokeStyle = accent || '#d8f8ff';
+    ctx.lineWidth = 2;
+    ctx.fillRect(x + 3, y + 3, 26, 26);
+    ctx.strokeRect(x + 3.5, y + 3.5, 25, 25);
+    ctx.drawImage(rec.img, x + 6, y + 6, 20, 20);
     ctx.restore();
     return true;
   }
@@ -7229,5 +7817,5 @@ G.Factory = (function () {
   }
 
   function laborStatus() { return { count: S.wanderers.filter(w => w.data && w.data.labor).length, limit: laborLimit() }; }
-  return { init, update, render, reloadState, screenToCell, tryLoadCreature, hoverDropTarget, clearDropHover, sellAllWarehouse, sellSomeType, sellPenCreatures, sellJissoFood, spawnWanderer, dropToFactory, dropFloorCargo, burstAt, stainAt, floatText, playSfxAt: playWorldSfx, triggerRaidCountdown, clearInvaders, researchPower, warehouseCount, laborStatus, feedZoneMult, feedZoneInfo, pushOutOfFeeders, exportRuntimeState, importRuntimeState, refreshMenu };
+  return { init, update, render, reloadState, playOpeningIntro, screenToCell, tryLoadCreature, hoverDropTarget, clearDropHover, sellAllWarehouse, sellSomeType, sellPenCreatures, sellJissoFood, spawnWanderer, dropToFactory, dropFloorCargo, burstAt, stainAt, floatText, playSfxAt: playWorldSfx, triggerRaidCountdown, clearInvaders, researchPower, warehouseCount, laborStatus, feedZoneMult, feedZoneInfo, pushOutOfFeeders, exportRuntimeState, importRuntimeState, refreshMenu, questsForUI, acceptQuest, completeQuest, questHasAny, forceTutorialGrowth, focusCameraOnGrid, tutorialGrowthLineConnected };
 })();

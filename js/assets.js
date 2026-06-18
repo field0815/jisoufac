@@ -6,7 +6,7 @@ window.G = window.G || {};
 G.Assets = (function () {
   const images = {};   // path -> {img, ok}
   const sounds = {};   // path -> Audio
-  const bgm = { index: 0, audio: null, started: false, unlockBound: false, mode: null };
+  const bgm = { index: 0, audio: null, started: false, unlockBound: false, mode: null, fade: null };
 
   function loadImage(path) {
     if (images[path]) return images[path];
@@ -69,7 +69,8 @@ G.Assets = (function () {
   function setBgmVolume(v) {
     const a = audioSettings();
     a.bgm = Math.max(0, Math.min(1, v));
-    if (bgm.audio) bgm.audio.volume = a.bgm;
+    if (bgm.fade) bgm.fade.target = a.bgm;
+    else if (bgm.audio) bgm.audio.volume = a.bgm;
   }
   function setSfxVolume(v) {
     audioSettings().sfx = Math.max(0, Math.min(1, v));
@@ -102,7 +103,7 @@ G.Assets = (function () {
       if (bgm.audio) { bgm.audio.pause(); bgm.audio.onended = null; }
       const a = new Audio(path);
       bgm.audio = a;
-      a.volume = audioSettings().bgm == null ? 0.35 : audioSettings().bgm;
+      a.volume = bgm.fade ? 0 : (audioSettings().bgm == null ? 0.35 : audioSettings().bgm);
       a.loop = !!loop;
       a.onended = loop ? null : playNextBgm;
       const p = a.play();
@@ -139,10 +140,18 @@ G.Assets = (function () {
     window.addEventListener('pointerdown', retry);
     window.addEventListener('keydown', retry);
   }
-  function startBgm() {
+  function startBgm(opts) {
     if (bgm.started) return;
     bgm.started = true;
+    if (opts && opts.fadeIn) {
+      bgm.fade = { t: 0, dur: Math.max(0.1, opts.fadeIn), target: audioSettings().bgm == null ? 0.35 : audioSettings().bgm };
+    }
     resumeCurrentMode();
+  }
+  function stopBgm() {
+    if (bgm.audio) { bgm.audio.pause(); bgm.audio.onended = null; bgm.audio = null; }
+    bgm.started = false;
+    bgm.fade = null;
   }
 
   // 미리 자주 쓰는 이미지 예열
@@ -161,7 +170,19 @@ G.Assets = (function () {
    *  이미지 크기는 자유(게임이 4등분해서 사용).
    * ----------------------------------------------------------------------- */
   let animT = 0;
-  function tick(dt) { animT += dt; }
+  function tick(dt) {
+    animT += dt;
+    if (bgm.fade && bgm.audio) {
+      bgm.fade.t += Math.max(0, dt || 0);
+      const p = Math.min(1, bgm.fade.t / bgm.fade.dur);
+      const e = p * p * (3 - 2 * p);
+      bgm.audio.volume = Math.max(0, Math.min(1, bgm.fade.target * e));
+      if (p >= 1) {
+        bgm.audio.volume = bgm.fade.target;
+        bgm.fade = null;
+      }
+    }
+  }
   function frame() { return Math.floor(animT * (G.CONFIG.ANIM_FPS || 4)) % 4; }
 
   // 이동 벡터 → 방향 행(0:앞/아래 1:좌 2:우 3:뒤/위)
@@ -217,5 +238,5 @@ G.Assets = (function () {
     return true;
   }
 
-  return { loadImage, creatureImg, deviceImg, productImg, bgImg, drawOrPlaceholder, playSfx, setBgmVolume, setSfxVolume, startBgm, setBgmMode, preload, tick, frame, dirRow, drawCreatureSprite, drawCreatureNative, drawDeviceSprite, drawDeviceSpriteNamed, drawDeviceSheetFrame, drawDeviceFit, drawProductImage };
+  return { loadImage, creatureImg, deviceImg, productImg, bgImg, drawOrPlaceholder, playSfx, setBgmVolume, setSfxVolume, startBgm, stopBgm, setBgmMode, preload, tick, frame, dirRow, drawCreatureSprite, drawCreatureNative, drawDeviceSprite, drawDeviceSpriteNamed, drawDeviceSheetFrame, drawDeviceFit, drawProductImage };
 })();

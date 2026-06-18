@@ -65,6 +65,41 @@ html, body {
   min-width: 34px;
 }
 .tb-options:hover { color: #ffd964; }
+.tb-power { cursor: pointer; }
+.tb-tutorial {
+  background: #2a2d38; color: #8fb4e6; border: 1px solid #3a4a60;
+  padding: 6px 10px; border-radius: 6px; cursor: pointer; font-family: monospace;
+  font-weight: bold; min-width: 28px;
+}
+.tb-tutorial:hover { color: #ffd964; border-color: #6f93e0; }
+
+#tutorial-reset-dialog {
+  position: absolute; inset: 0; z-index: 1650;
+  align-items: center; justify-content: center;
+  background: rgba(6, 8, 12, 0.62);
+}
+.trd-card {
+  display: flex; gap: 14px; align-items: center;
+  width: 460px; padding: 16px 18px;
+  background: #1b1f2a; border: 1px solid #536078; border-radius: 10px;
+  box-shadow: 0 18px 52px rgba(0,0,0,0.62);
+}
+.trd-portrait {
+  width: 76px; height: 76px; flex: 0 0 76px;
+  background-size: cover; background-position: center top;
+  border-radius: 8px; border: 1px solid #3a4456; background-color: #11141c;
+}
+.trd-body { flex: 1; }
+.trd-name { color: #ffd964; font-weight: bold; font-size: 13px; margin-bottom: 4px; }
+.trd-text { color: #eaf2ff; font-size: 15px; margin-bottom: 12px; line-height: 1.35; }
+.trd-actions { display: flex; gap: 8px; }
+.trd-actions button {
+  flex: 1; padding: 9px 10px; border-radius: 7px;
+  border: 1px solid #48546a; background: #2b3140; color: #e7edf8;
+  cursor: pointer; font-size: 13px;
+}
+.trd-actions button[data-trd="yes"] { background: #34507c; border-color: #5a7fd0; }
+.trd-actions button:hover { background: #40516f; color: #fff; }
 .options-menu {
   position: absolute; right: 12px; top: 40px; z-index: 1200; display: none;
   width: 180px; padding: 10px; background: #1b1e26;
@@ -117,6 +152,8 @@ html, body {
   background: rgba(106, 53, 53, 0.72);
   color: #ffe4e4;
 }
+.opt-file-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 6px; }
+.opt-file-row button { margin-bottom: 0; text-align: center; font-size: 12px; padding: 8px 6px; }
 .opt-save-time { color: #95a0b2; font-size: 12px; padding: 4px; }
 .opt-slots { display: flex; flex-direction: column; gap: 5px; margin-bottom: 8px; }
 .opt-slot-row { display: grid; grid-template-columns: 52px 1fr auto auto; align-items: center; gap: 6px; }
@@ -129,6 +166,74 @@ html, body {
 .options-menu .opt-tab.active { background: #40516f; border-color: #7fa6dc; color: #fff; }
 .opt-pane { display: none; }
 .opt-pane.active { display: block; }
+
+#new-game-dialog {
+  position: absolute; inset: 0; z-index: 1600;
+  align-items: center; justify-content: center;
+  background: rgba(6, 8, 12, 0.68);
+}
+.ng-card {
+  width: 520px; padding: 18px;
+  background: #1b1f2a; border: 1px solid #536078; border-radius: 8px;
+  box-shadow: 0 18px 52px rgba(0,0,0,0.62);
+}
+.ng-title { font-size: 22px; font-weight: 800; color: #f0f5ff; margin-bottom: 4px; }
+.ng-sub { color: #aeb9cb; font-size: 13px; margin-bottom: 14px; }
+.ng-choices { display: grid; gap: 10px; }
+.ng-choices button {
+  width: 100%; text-align: left; padding: 13px 14px;
+  border-radius: 7px; border: 1px solid #48546a; background: #2b3140;
+  color: #e7edf8; cursor: pointer;
+}
+.ng-choices button:hover { background: #36445f; border-color: #7fa6dc; }
+.ng-choices button[disabled] { opacity: 0.42; cursor: default; filter: grayscale(0.5); }
+.ng-choices button[disabled]:hover { background: #2b3140; border-color: #48546a; }
+.ng-choices b { display: block; font-size: 17px; color: #fff2a6; margin-bottom: 4px; }
+.ng-choices span { display: block; color: #b9c3d3; font-size: 12px; line-height: 1.45; }
+.ng-actions { margin-top: 12px; display: flex; justify-content: flex-end; }
+.ng-actions button {
+  padding: 8px 14px; border-radius: 6px; border: 1px solid #454b5e;
+  background: #303545; color: #d9e0ec; cursor: pointer;
+}
+
+#tutorial-panel {
+  position: absolute; left: 18px; bottom: 224px; z-index: 1250;
+  width: 430px; padding: 13px;
+  background: rgba(24, 28, 38, 0.95);
+  border: 1px solid #536078; border-radius: 8px;
+  box-shadow: 0 10px 32px rgba(0,0,0,0.48);
+}
+.tut-head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; margin-bottom: 8px; }
+.tut-head b { color: #fff2a6; font-size: 15px; }
+.tut-head span { color: #94a4ba; font-size: 11px; white-space: nowrap; }
+.tut-body { color: #e7edf8; font-size: 13px; line-height: 1.5; }
+.tut-tip {
+  margin-top: 8px; padding: 7px 8px; border-left: 3px solid #7fa6dc;
+  background: rgba(80, 112, 155, 0.18); color: #c8d6ea;
+  font-size: 12px; line-height: 1.4;
+}
+.tut-actions { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 6px; margin-top: 10px; }
+.tut-actions button, .tut-restore {
+  padding: 7px 8px; border-radius: 6px; border: 1px solid #454b5e;
+  background: #303545; color: #d9e0ec; cursor: pointer; font-size: 12px;
+}
+.tut-actions button:hover, .tut-restore:hover { background: #40516f; color: #fff; }
+.tut-actions button[disabled] { opacity: 0.45; cursor: default; background: #292d38; color: #8b94a5; }
+.tut-actions button[disabled]:hover { background: #292d38; color: #8b94a5; }
+.tutorial-focus {
+  position: relative;
+  z-index: 3;
+  outline: 3px solid #ffd84d !important;
+  box-shadow: 0 0 0 3px rgba(255,216,77,0.28), 0 0 18px rgba(255,216,77,0.85) !important;
+  animation: tutorialFocusPulse 0.85s ease-in-out infinite alternate;
+}
+@keyframes tutorialFocusPulse {
+  from { filter: brightness(1); }
+  to { filter: brightness(1.35); }
+}
+#tutorial-panel.collapsed {
+  width: auto; padding: 0; border: 0; background: transparent; box-shadow: none;
+}
 .opt-slider { display: grid; grid-template-columns: 48px 1fr 40px; align-items: center; gap: 7px; margin: 8px 0; color: #dfe8f5; font-size: 12px; }
 .opt-slider input { width: 100%; }
 .opt-slider b { text-align: right; color: #ffd964; }
@@ -536,6 +641,82 @@ html, body {
 }
 .di-actions button:hover { background: #3a4456; }
 .di-actions button.active { background: #2d6f56; border-color: #6ee0b6; color: #f4fff9; }
+.di-desc-sub { font-size: 11px; color: #aebbd0; margin: 3px 0 0; }
+/* 콜로니 퀘스트 보드 */
+.di-quest-head { margin: 9px 0 4px; font-size: 12px; font-weight: bold; color: #ffd964; border-top: 1px solid #394153; padding-top: 7px; }
+.di-quest { background: #232a38; border-left: 3px solid #888; border-radius: 4px; padding: 6px 8px; margin-bottom: 6px; }
+.di-quest-org { font-size: 12px; font-weight: bold; margin-bottom: 2px; }
+.di-quest-req { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #e6edf6; }
+.di-quest-req small { color: #9fb0c4; }
+.di-quest-reward { font-size: 11px; color: #cfe0b0; margin: 3px 0; }
+.di-quest .di-actions { margin-top: 4px; padding-top: 4px; border: 0; justify-content: flex-start; }
+.q-ok { color: #7ee08a; }
+.q-no { color: #ffb35a; }
+/* 미연시식 무전 패널 — 하단 대사창 + 우상단 초상 */
+#midori-panel {
+  position: absolute; left: 312px; bottom: 208px; z-index: 900; width: 816px;
+  min-height: 118px; display: none; align-items: stretch; gap: 14px;
+  background: linear-gradient(180deg, rgba(20,24,34,0.97), rgba(10,13,19,0.97));
+  border: 2px solid #607a94; border-radius: 8px;
+  padding: 24px 136px 20px 24px; box-shadow: 0 8px 24px rgba(0,0,0,0.65);
+}
+#midori-panel.show { display: flex; animation: midori-in 0.25s ease; }
+@keyframes midori-in { from { transform: translateY(18px); opacity: 0; } to { transform: none; opacity: 1; } }
+.midori-portrait {
+  position: absolute; left: 1126px; bottom: 208px; z-index: 905; width: 176px; height: 220px;
+  display: none; border-radius: 6px; background: #f4f4f0 center/contain no-repeat;
+  border: 2px solid #607a94; box-shadow: 0 8px 18px rgba(0,0,0,0.55);
+}
+.midori-portrait.midori-raw {
+  left: 984px; bottom: 208px; width: 344px; height: 489px;
+  border: 0; border-radius: 0; box-shadow: none;
+  background-color: transparent; background-size: auto; background-position: center bottom;
+}
+.midori-portrait.show { display: block; }
+.radio-request-icon {
+  position: absolute; right: 24px; top: 32px; width: 88px; height: 88px; display: none;
+  background: center/contain no-repeat; opacity: 0.96;
+  filter: drop-shadow(0 3px 7px rgba(0,0,0,0.65));
+}
+.radio-request-icon.show { display: block; }
+.midori-bubble { flex: 1; }
+.midori-name { font-size: 20px; font-weight: bold; color: #8fd0ff; margin-bottom: 12px; }
+.midori-text { font-size: 24px; line-height: 1.42; color: #e6edf6; word-break: keep-all; }
+.radio-request-text { margin-top: 10px; color: #ffd964; font-weight: 800; }
+.midori-close { position: absolute; top: 4px; right: 6px; background: none; border: 0; color: #889; font-size: 16px; cursor: pointer; }
+/* 무전 직전 치지직(static) 효과 */
+#radio-static {
+  position: absolute; inset: 0; z-index: 899; pointer-events: none; opacity: 0;
+  background-image: repeating-linear-gradient(0deg, rgba(255,255,255,0.06) 0, rgba(255,255,255,0.06) 1px, rgba(0,0,0,0.10) 2px, rgba(0,0,0,0.10) 3px);
+  mix-blend-mode: screen;
+}
+#radio-static.on, #radio-static.dialog { opacity: 1; animation: static-flicker 0.08s steps(2) infinite; }
+@keyframes static-flicker { 0% { transform: translateY(0); opacity: 0.5; } 50% { transform: translateY(-2px); opacity: 0.9; } 100% { transform: translateY(1px); opacity: 0.6; } }
+#midori-tooltip {
+  position: absolute; z-index: 1200; display: none; align-items: center; gap: 8px;
+  max-width: 280px; min-height: 58px; padding: 7px 10px;
+  background: rgba(12,16,24,0.96); border: 1px solid #607a94; border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.55); pointer-events: none;
+}
+.mt-portrait { width: 42px; height: 52px; flex: 0 0 42px; background: center bottom/contain no-repeat; }
+.mt-text { color: #e6edf6; font-size: 12px; line-height: 1.35; word-break: keep-all; }
+#opening-vignette {
+  position: absolute; inset: 0; z-index: 1400; pointer-events: auto;
+  background: #000; opacity: 1;
+}
+/* 진행 의뢰 추적(좌상단, 연구중 창 아래) */
+#quest-tracker {
+  position: absolute; top: 92px; left: 12px; z-index: 350; width: 196px;
+  background: rgba(18,22,30,0.9); border: 1px solid #4a6a8a; border-radius: 8px; padding: 6px 8px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.5);
+}
+.qt-title { font-size: 11px; font-weight: bold; color: #ffd964; margin-bottom: 4px; }
+.qt-row { display: flex; justify-content: space-between; gap: 6px; font-size: 11px; color: #dfe8f5; padding: 1px 0; }
+.qt-org { font-weight: bold; }
+.di-actions.cook-menu { justify-content: flex-start; }
+.cook-menu-btn { display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 4px 6px !important; }
+.cook-menu-btn .di-item-icon { width: 22px; height: 22px; }
+.cook-menu-btn small { font-size: 9px; }
 
 /* 우리 이름 패널 */
 #pen-panel {

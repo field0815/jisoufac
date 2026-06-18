@@ -142,6 +142,7 @@ G.Park = (function () {
       if (pen && G.Pens && G.Pens.addToPen) placed = G.Pens.addToPen(pen, c);   // 가득이면 false
     }
     if (!placed) G.Factory.dropToFactory(c);   // 자동/지정 우리 가득 → 기본 배치
+    if (G.UI && G.UI.markTutorialAction) G.UI.markTutorialAction('parkCaptured');
     G.Assets.playSfx('capture');
   }
   function moveCreature(c, dt, f) {

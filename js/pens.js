@@ -144,15 +144,16 @@ G.Pens = (function () {
     // 사료 수요 — 사료분배기 범위 안: 선택 사료를 2배 소모(전역 자원). 범위 밖: 우리 바닥 운치(똥) 섭취.
     let demandPerMin = 0, unchiPerMin = 0;
     const feedInfo = (gx, gy) => (G.Factory.feedZoneInfo ? G.Factory.feedZoneInfo(gx, gy) : { inZone: false, type: '실장푸드', mult: 1 });
+    const difficultyFoodMult = S.difficulty === 'breeding' ? 0.5 : 1;
     pens.forEach(p => p.creatures.forEach(c => {
       const fi = feedInfo(p.col + (c.px || 0.5), p.row + (c.py || 0.5));
       if (fi.inZone) { c._feedSource = 'global'; c._feedType = fi.type || '실장푸드'; c._feedMult = fi.mult || C.FEED_GROWTH_MULT || 2; }
       else { c._feedSource = 'pen'; c._feedType = '운치'; c._feedMult = 1; }   // 사료분배기 없음 → 똥 먹음
       c._fedRatio = 1;
-      demandPerMin += (C.FOOD_RATE[c.type] || 0) * c._feedMult;
+      demandPerMin += (C.FOOD_RATE[c.type] || 0) * c._feedMult * difficultyFoodMult;
     }));
     // 운치는 우리 안 개체만 배설(바닥에 누적). 배회 개체는 배설 안 함.
-    penned.forEach(c => { unchiPerMin += (C.FOOD_RATE[c.type] || 0) * C.UNCHI_MULT; });
+    penned.forEach(c => { unchiPerMin += (C.FOOD_RATE[c.type] || 0) * C.UNCHI_MULT * difficultyFoodMult; });
     S.foodDemandPerMin = demandPerMin; S.unchiPerMin = unchiPerMin;
 
     function takeFeed(type, amount) {
@@ -162,7 +163,7 @@ G.Pens = (function () {
       const got = Math.min(amount, S.food || 0); S.food -= got; return got / amount;
     }
     pens.forEach(p => p.creatures.forEach(c => {
-      const need = (C.FOOD_RATE[c.type] || 0) * (c._feedMult || 1) / 60 * dt;
+      const need = (C.FOOD_RATE[c.type] || 0) * (c._feedMult || 1) * difficultyFoodMult / 60 * dt;
       if (c._feedSource === 'pen') {                    // 우리 바닥 운치(똥) 소모
         if (need <= 0) { c._fedRatio = 1; }
         else { const got = Math.min(need, p.unchi || 0); p.unchi -= got; c._fedRatio = got / need; }
@@ -191,7 +192,7 @@ G.Pens = (function () {
       const list = pen.creatures;
       // 운치 누적: 우리 안 개체의 식욕에 비례. 상한=칸 비례 수용량. 오염도에 비례해 얼룩 표시.
       let penUnchiRate = 0;
-      for (const c of list) penUnchiRate += (C.FOOD_RATE[c.type] || 0) * C.UNCHI_MULT;
+      for (const c of list) penUnchiRate += (C.FOOD_RATE[c.type] || 0) * C.UNCHI_MULT * difficultyFoodMult;
       pen.unchi = Math.min(penUnchiMax(pen), (pen.unchi || 0) + penUnchiRate / 60 * dt);
       reconcilePenStains(pen);
       const pollution = penPollution(pen);   // 오염도%(0~100)

@@ -57,7 +57,7 @@ G.CONFIG = {
   SIZE_EVOLVE_AT: { 구더기: 5, 엄지: 10, 자실장: 30, 새끼사육실장: 30, 새끼독라: 30 },
   SIZE_GROW_TIME: 20,       // 실장푸드를 먹은 시간 20초당 크기 +1
 
-  SLIME_TIME: 10,           // 점액덩어리 → 구더기 자동 변환(초)
+  SLIME_TIME: 30,           // 점액덩어리 → 구더기 자동 변환(초)
 
   // 장치 동작 수치
   BIRTH_INTERVAL: 10,       // 출산대: 구더기 생산 주기(초) — 10초로 하향
@@ -193,6 +193,7 @@ G.CONFIG = {
   LAB_SLOTS: 8,                 // 연구소 장착 슬롯
   LAB_HP_DRAIN: 0.01,           // 연구 중 장착 실장석 체력 소모량(초당=10초당 0.1)
   RESEARCH_QUEUE_MAX: 5,        // 연구 예약 최대 수
+  COLONY_UPGRADE_SEC_PER_TIER: 60,  // 콜로니 티어 승급 소요시간(초) = 목표 티어 × 이 값 (T1=1분, T2=2분, T3=3분)
   POWER_BOOST: 1.5,             // 전기 공급 시 가공/방어/특수 건물 효율 배수
   POWER_PLANT_RANGE: 9,         // 발전소 자체 보급 범위(타일)
   POWER_PLANT_RANGE_BY_TYPE: { chaoscharge: 10 },
@@ -203,7 +204,9 @@ G.CONFIG = {
     구더기: 10, 엄지: 10, 자실장: 30, 새끼독라: 30, 새끼사육실장: 30,
     성체실장: 60, 독라: 60, 사육실장: 60,
     운치: 10, 분쇄육: 15, 실장육: 40,
+    농축운치: 30, 고농축운치: 120, 초고농축운치: 300,   // 농축 운치 연료(30초/2분/5분)
   },
+  MIX_CONCENTRATE: 5,           // 배합기: 운치 5 → 농축 운치 1 (각 단계 5:1)
   CHAOS_FUEL_TIME: { 대형위석: 60, 중형위석: 40, 소형위석: 30 },
   RUIN_TYPES: {
     ruin: { name: '유적', w: 5, h: 5, base: 1, scrap: [30000, 50000], color: '#69717b' },
@@ -290,7 +293,7 @@ G.DIR = {
 /* ---- 실장석 종류 ------------------------------------------------------- */
 G.CREATURES = {
   성체실장:     { img: 'adult.png',       color: '#d98a8a', label: '성체',    isAdult: true,  ai: 'predator', baby: '구더기' },
-  점액덩어리:   { img: 'slime.png',       color: '#bfe3b0', label: '점액',    isAdult: false }, // 출산 직후, 10초 후 구더기
+  점액덩어리:   { img: 'slime.png',       color: '#bfe3b0', label: '점액',    isAdult: false }, // 출산 직후, 30초 후 구더기
   구더기:       { img: 'maggot.png',      color: '#e8d9a0', label: '구더기',  isAdult: false },
   엄지:         { img: 'thumb.png',       color: '#c8a0e8', label: '엄지',    isAdult: false },
   자실장:       { img: 'child.png',       color: '#a0c8e8', label: '자실장',  isAdult: false },
@@ -314,6 +317,9 @@ G.PRODUCTS = {
   우마이푸드: { color: '#e8b54a', img: 'umai_food.png', isProduct: false, size: 0 }, // 자원(특수 사료: 성장3배·행복+0.3/s)
   다이어트푸드: { color: '#9ad0e0', img: 'diet_food.png', isProduct: false, size: 0 }, // 자원(특수 사료: 성장0.5배·개념 상승)
   운치:     { color: '#964', img: 'unchi.png',  isProduct: false, size: 10 }, // 자원(배설물)
+  농축운치:   { color: '#7a5a2a', img: 'unchi_c1.png', isProduct: false, size: 10, fuel: true }, // 연료(화력발전 30초)
+  고농축운치: { color: '#5a3f18', img: 'unchi_c2.png', isProduct: false, size: 10, fuel: true }, // 연료(화력발전 2분)
+  초고농축운치: { color: '#3a2710', img: 'unchi_c3.png', isProduct: false, size: 10, fuel: true }, // 연료(화력발전 5분)
   // 위석(도축 부산물) — 도축한 실장석 종류에 따라 크기가 다름. 분쇄기에 넣으면 조미료 산출.
   소형위석: { color: '#8fa6b2', img: 'bezoar_s.png', isProduct: false, size: 10, grindSeasoning: 1 },
   중형위석: { color: '#6f8f9f', img: 'bezoar_m.png', isProduct: false, size: 10, grindSeasoning: 3 },
@@ -381,15 +387,18 @@ G.DEVICES = {
                 accept: ['자실장', '성체실장'], hold: 6 },
   mixer:      { cat: 'processing', name: '배합기',   w: 2, h: 2, img: 'mixer.png',      color: '#6a4a7a', rotatable: true, unlock: '배합기', tier: 1, powerUse: 0, desc: '분쇄육1+운치10→실장푸드50. 짓소산1+실장푸드50→짓소산푸드50. 조미료1+실장푸드50→우마이푸드50. 철조각1+실장푸드50→다이어트푸드50. 일꾼 슬롯3.',
                 worker: true, accept: ['분쇄육', '운치', '짓소산', '실장푸드', '조미료', '철조각'], time: 2 },
-  cookery:    { cat: 'processing', name: '조리실',   w: 3, h: 2, img: 'cookery.png',    color: '#b5723a', rotatable: true, unlock: '조리실', tier: 1, powerUse: 0, desc: '구더기/엄지3+조미료→꼬치훈제, 구더기/엄지3+짓소산→실장무침, 분쇄육2+짓소산→실장젓갈. 일꾼 슬롯3.',
+  cookery:    { cat: 'processing', name: '조리실',   w: 3, h: 2, img: 'cookery.png',    color: '#b5723a', rotatable: true, unlock: '조리실', tier: 1, powerUse: 0, desc: '메뉴를 선택해 조리. 선택한 메뉴의 재료가 모이면 조리를 시작한다. 일꾼 슬롯3.',
                 worker: true,
-                accept: ['구더기', '분쇄육', '엄지', '짓소산', '조미료'],
+                accept: ['구더기', '엄지', '분쇄육', '짓소산', '조미료', '콘페이토', '농축운치', '코로리', '도돈파'],
+                // ing: {any:[재료들], n:개수, stat:true(품질 반영), seasoning:true(전역 조미료 비축에서 소모)}
                 cook: {
-                  구더기: { n: 3, out: '꼬치훈제', seasoning: '조미료' },
-                  엄지: { n: 3, out: '꼬치훈제', seasoning: '조미료' },
-                  '구더기+짓소산': { n: 3, mat: '구더기', out: '실장무침', seasoning: '짓소산' },
-                  '엄지+짓소산': { n: 3, mat: '엄지', out: '실장무침', seasoning: '짓소산' },
-                  분쇄육: { n: 2, out: '실장젓갈', seasoning: '짓소산' },
+                  꼬치훈제: { out: '꼬치훈제', desc: '구더기 또는 엄지 3 + 조미료 1', ing: [{ any: ['구더기', '엄지'], n: 3, stat: true }, { any: ['조미료'], n: 1, seasoning: true }] },
+                  실장무침: { out: '실장무침', desc: '구더기 또는 엄지 3 + 짓소산 1', ing: [{ any: ['구더기', '엄지'], n: 3, stat: true }, { any: ['짓소산'], n: 1 }] },
+                  실장젓갈: { out: '실장젓갈', desc: '분쇄육 2 + 짓소산 1', ing: [{ any: ['분쇄육'], n: 2, stat: true }, { any: ['짓소산'], n: 1 }] },
+                  콘페이토: { out: '콘페이토', desc: '조미료 3', ing: [{ any: ['조미료'], n: 3, seasoning: true }] },
+                  도돈파:   { out: '도돈파',   desc: '콘페이토 1 + 농축운치 1', ing: [{ any: ['콘페이토'], n: 1 }, { any: ['농축운치'], n: 1 }] },
+                  코로리:   { out: '코로리',   desc: '짓소산 5', ing: [{ any: ['짓소산'], n: 5 }] },
+                  도로리:   { out: '도로리',   desc: '코로리 1 + 도돈파 1', ing: [{ any: ['코로리'], n: 1 }, { any: ['도돈파'], n: 1 }] },
                 },
                 time: 3 },
   acidgen:    { cat: 'processing', name: '짓소산 생성기', w: 3, h: 3, img: 'acidgen.png', color: '#2f8f75', rotatable: true, unlock: '짓소산생성기', tier: 2, powerUse: 30, powerRequired: true, desc: '성체실장 1마리의 행복을 5씩 짜낸다. 행복 5가 떨어질 때마다 짓소산 1개, 행복이 0이 되면 분쇄육 1개를 만든다.',
@@ -412,7 +421,7 @@ G.DEVICES = {
   // 콜로니 센터: 게임 시작 시 기본 배치(메뉴에 없음). 이동 가능·철거 불가·창고 기능.
   colony: { cat: 'production', name: '콜로니 센터', w: 5, h: 5, img: 'colony.png', color: '#5a6a8a', rotatable: false, colony: true, desc: '공장의 중심. 티어를 올리는데 필요하다. 창고처럼 기능하기도 한다.' },
   // 포장기: 가공 탭. 철조각을 곁들여 통조림/진공포장 가공.
-  packer: { cat: 'processing', name: '포장기', w: 3, h: 3, img: 'packer.png', color: '#7b6a42', rotatable: true, tier: 2, powerUse: 25, powerRequired: true,
+  packer: { cat: 'processing', name: '포장기', w: 3, h: 3, img: 'packer.png', color: '#7b6a42', rotatable: true, unlock: '포장기', tier: 1, powerUse: 25, powerRequired: true,
             accept: ['분쇄육', '실장육', '철조각'], time: 1.5,
             desc: '분쇄육1+철조각1→통조림1. 실장육1+철조각1→진공포장1.' },
   // 물류센터: 물류 탭. 화물/실장석을 넣으면 즉시 판매(옛 포장기 역할).
@@ -490,6 +499,7 @@ G.UPGRADES = [
   { key: '교정시설', name: '교정시설', desc: '가공 탭에 교정시설을 해금합니다.', cost: 2000, maxLevel: 1, tier: 1 },
   { key: '배합기', name: '배합기', desc: '가공 탭에 배합기를 해금합니다.', cost: 1000, maxLevel: 1, tier: 1 },
   { key: '조리실', name: '조리실', desc: '가공 탭에 조리실을 해금합니다.', cost: 5000, maxLevel: 1, tier: 1 },
+  { key: '포장기', name: '포장기', desc: '가공 탭에 포장기를 해금합니다.', cost: 5000, maxLevel: 1, tier: 1 },
   { key: '짓소산생성기', name: '짓소산 생성기', desc: '가공 탭에 짓소산 생성기를 해금합니다.', cost: 10000, maxLevel: 1, tier: 2 },
   { key: '태교스피커', name: '태교스피커', desc: '특수 탭에 태교스피커를 해금합니다.', cost: 2000, maxLevel: 1, tier: 1 },
   { key: '레드포인터', name: '레드포인터', desc: '특수 탭에 레드포인터를 해금합니다.', cost: 4000, maxLevel: 1, tier: 1 },
@@ -575,6 +585,107 @@ G.LINES = {
 
 /* ---- 교정시설 수치 ----------------------------------------------------- */
 G.CORRECTION = { LINE_MIN: 1.5, LINE_MAX: 3.5, ESCAPE_CONCEPT: 20, ESCAPE_CHANCE: 0.3, GRAD_CONCEPT: 30, GRAD_TIME: 30 };
+
+/* ---- 대사/이벤트 텍스트 -------------------------------------------------
+ *  - 배열에 줄을 추가하면 대화창에서 순서대로 표시됩니다.
+ *  - 문자열 대신 { text, emotion, name, long } 형태로 줄마다 표정/이름/표시시간을 바꿀 수 있습니다.
+ *  - 미도리 감정: normal, laziness, mad, sad, shy, laugh, sleep, wrong
+ * ----------------------------------------------------------------------- */
+G.DIALOGUES = {
+  openingMidori: [
+    { emotion: 'normal', text: '드디어 왔네, 공장장. 나는 실장인 미도리야.' },
+    { emotion: 'laziness', text: '실장석 출신이지만 알건 다 알아. 네 비서니까 귀찮아도 기본 운영법 정도는 설명해줄게.' },
+    { emotion: 'normal', text: '우선 이 콜로니 센터가 공장의 심장이야. 여기서 티어를 올리고, 의뢰와 생산을 이어가게 될 거야.' },
+    { emotion: 'normal', text: '알다시피 생물재앙으로 지구상에는 인류와 실장석 말고는 대부분의 생물들이 멸종했어.' },
+    { emotion: 'laugh', text: '인간들은 방공호에 숨어 실장석을 먹고 버티고 있지. 공장장이 제대로 못하면 방공호의 인류는 멸종할거란 뜻이야.' },
+    { emotion: 'laziness', text: '멍하니 보고만 있으면 아무것도 안 굴러가니까, 설명은 짧게 할게. 잘 들어.' },
+  ],
+    firstVault44Quest: {
+    item: '실장육',
+    n: 30,
+    rewardMoney: 8000,
+    rewardText: '💰 8,000',
+    line: '44방공호다. 실장육 30개를 서둘러 보내라. 둥지가 굶고 있다.',
+  },
+  colonyTier1Midori: [
+    { emotion: 'mad', text: '…어이없을 정도로 일방적인 요구네. 방공호 녀석들은 자기들이 갑인줄 안다니까.' },
+    { emotion: 'shy', text: '우리가 없으면 자기들끼리 잡아먹어야 하는 주제에 말이야.' },
+    { emotion: 'laziness', text: '어쨌든 돈은 벌어야하니까 빨리 납품하자. 이런 긴급요청은 단가가 좋거든!' },
+  ],
+
+};
+
+/* ---- 퀘스트(무전) ------------------------------------------------------
+ *  - 의뢰 주체 5단체. 단체별 요청 품목 풀 / 보상 종류 / 등장 최소 티어.
+ *  - reqs[].item: 요청 품목 1종(이름+아이콘). qty: 기준 수량(티어로 스케일, 끝자리 0).
+ *    stat: {key, min}=살아있는 실장석 스탯 조건. unit: 보상 환산 기준 단가.
+ *  - reward: 'money' | 'money_big' | 'money_meat' | 'research' | 'power' | 'money_power'
+ * ----------------------------------------------------------------------- */
+G.QUEST_CONFIG = {
+  SPAWN_INTERVAL: 180,   // 3분마다 1개 생성
+  MAX_ACTIVE: 3,         // 최대 3개 누적
+  STATIC_TIME: 1.6,      // 무전 직전 치지직 효과 시간(초). 대사창 클릭 시 즉시 스킵
+  TYPE_SPEED: 18,        // 대사 한 글자 출력 간격(ms). 타이핑 중 클릭 시 즉시 전체 표시
+};
+G.QUEST_ORGS = {
+  vault44: {
+    name: '44방공호', short: '44', color: '#c9a24a', minTier: 0, reward: 'money', weight: 40,
+    intro: '인류 최대 거주지. 실장석은 그저 식량이자 연료다. 질보다 양.',
+    reqs: [
+      { item: '실장육', qty: 50, unit: 22 }, { item: '분쇄육', qty: 60, unit: 8 },
+      { item: '통조림', qty: 30, unit: 60 }, { item: '진공포장', qty: 30, unit: 60 },
+      { item: '운치', qty: 200, unit: 3, tier: 1 }, { item: '농축운치', qty: 30, unit: 18, tier: 1 },
+      { item: '고농축운치', qty: 20, unit: 90, tier: 2 },
+    ],
+    lines: ['둥지의 배급이 끊겼다. 양으로 채워라.', '사람이 굶는다. 숫자가 곧 생명이다.', '화로가 식는다. 연료를 보내라.'],
+    done: ['살았다. 다음도 부탁한다.', '둥지가 한숨 돌렸다.'],
+  },
+  bezoar: {
+    name: '위석 연구소', short: '위석', color: '#6f8f9f', minTier: 0, reward: 'research_power', weight: 10, rare: true,
+    intro: '실장석의 기이한 생명력을 연구한다. 고통엔 둔감하다.',
+    reqs: [
+      { item: '구더기', qty: 20, unit: 0 }, { item: '엄지', qty: 20, unit: 0 },
+      { item: '자실장', qty: 10, unit: 0, stat: { key: '육질', min: 30 } },
+      { item: '성체실장', qty: 10, unit: 0, stat: { key: '육질', min: 50 }, tier: 1 },
+    ],
+    lines: ['살아있는 표본이 필요하다. 신선할수록 좋다.', '실험체를 보내라. 비명은 데이터다.'],
+    done: ['흥미로운 결과다. 연구가 진척됐다.', '표본 양호. 보답하지.'],
+  },
+  teaparty: {
+    name: '참피맘 티파티', short: '티파티', color: '#ff8fd8', minTier: 1, reward: 'money_big', weight: 20,
+    intro: '실장석을 아끼고 사랑하는 모임. 까다롭지만 후하게 쳐준다.',
+    reqs: [
+      { item: '사육실장', qty: 10, unit: 600, stat: { key: '개념', min: 60 } },
+      { item: '새끼사육실장', qty: 10, unit: 700, stat: { key: '개념', min: 40 } },
+      { item: '콘페이토', qty: 20, unit: 120 }, { item: '우마이푸드', qty: 100, unit: 6 },
+      { item: '다이어트푸드', qty: 100, unit: 6 },
+    ],
+    lines: ['우리 아이들에게 줄 좋은 친구가 필요해요♡', '품위 있는 아이로 부탁해요.', '달콤한 간식도 잊지 마세요!'],
+    done: ['어머, 완벽해요! 사례는 두둑이♡', '아이들이 좋아하겠네요.'],
+  },
+  freakshow: {
+    name: '참피 프릭쇼', short: '프릭쇼', color: '#a23a3a', minTier: 1, reward: 'money_meat', weight: 20,
+    intro: '실장석을 학대·조롱하는 막장 방송. 비틀린 욕망을 채운다.',
+    reqs: [
+      { item: '구더기', qty: 30, unit: 4 }, { item: '엄지', qty: 30, unit: 6 }, { item: '자실장', qty: 20, unit: 10 },
+      { item: '성체실장', qty: 20, unit: 14 }, { item: '독라', qty: 20, unit: 14 },
+      { item: '사육실장', qty: 10, unit: 500 },   // 사육실장은 더 후한 보상
+      { item: '도돈파', qty: 10, unit: 200, tier: 2 }, { item: '코로리', qty: 10, unit: 240, tier: 2 }, { item: '도로리', qty: 10, unit: 360, tier: 3 },
+    ],
+    lines: ['쇼에 내보낼 놈들이 필요해! 종류 불문!', '관객이 피를 원한다. 많이 보내!', '오늘 밤 메인 무대를 채워라!'],
+    done: ['시청률 대박이다! 사례다!', '관객이 환장했어. 고기로도 쳐주지.'],
+  },
+  cult: {
+    name: '낙원 컬트', short: '컬트', color: '#7b4faf', minTier: 2, reward: 'scrap_power', weight: 10,
+    intro: '실장석의 카오스 파워에 집착하는 자들. 제물로 바친다.',
+    reqs: [
+      { item: '독라', qty: 10, unit: 16, stat: { key: '개념', min: 80 } },
+      { item: '대형위석', qty: 10, unit: 40 }, { item: '중형위석', qty: 20, unit: 24 }, { item: '소형위석', qty: 20, unit: 16 },
+    ],
+    lines: ['깨달은 제물을 바쳐라. 낙원이 가까워진다.', '카오스가 우리를 구원하리라.'],
+    done: ['오오… 카오스가 응답했다. 힘을 나누마.', '제물은 별이 되었다.'],
+  },
+};
 
 /* ---- 자동 포탑 개별 업그레이드 (포탑 클릭 → 업그레이드 창) --------------
  *  비용 = base × (현재레벨 + 1) */

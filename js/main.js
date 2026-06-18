@@ -4,7 +4,6 @@
 (function () {
   function start() {
     G.Assets.preload();
-    G.Assets.startBgm && G.Assets.startBgm();
     const loadedSave = !!(G.Save && G.Save.hasSave() && G.Save.load(true));
 
     // 화면 스케일 (창 크기에 맞춰 1440x960 비율 유지)
@@ -18,6 +17,9 @@
     if (loadedSave) {
       G.Factory.reloadState();
       G.UI.afterStateLoad();
+      G.Assets.startBgm && G.Assets.startBgm({ fadeIn: 2.5 });
+    } else if (G.Factory.playOpeningIntro) {
+      G.Factory.playOpeningIntro();
     }
 
     setInterval(() => {
@@ -30,9 +32,10 @@
       last = now;
       if (dt > 0.1) dt = 0.1; // 큰 프레임 점프 방지
 
+      if (G.Assets && G.Assets.tick) G.Assets.tick(dt);
+
       // 업데이트 (일시정지 중에는 시뮬레이션 정지, 렌더는 계속)
-      if (!G.paused) {
-        G.Assets.tick(dt);
+      if (!G.paused && !G.dialogPaused && !G.openingPaused) {
         G.Park.update(dt);
         G.Pens.update(dt);
         G.Factory.update(dt);
