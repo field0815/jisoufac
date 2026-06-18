@@ -991,8 +991,42 @@ G.UI = (function () {
   }
   function onResearchExplain(key) { if (key) fireMidoriExplain('research:' + key); }
   function onReformerPowered() { fireMidoriExplain('reformerPowered'); }
-  // T 버튼: 미도리의 설명을 처음부터 다시 듣도록 초기화한다.
-  // 게임 진행/보상은 그대로 두고, 설명 발생 여부만 리셋한다.
+  // 현재 게임 상태에서 이미 해금되어 다시 들려줄 수 있는 설명 키 목록(정의 순서대로)
+  function unlockedExplainKeys() {
+    const keys = [];
+    for (const key of Object.keys(MIDORI_EXPLAIN)) {
+      if (key.indexOf('tab:') === 0) { keys.push(key); continue; }          // 탭 설명은 항상 해금
+      if (key.indexOf('build:') === 0) {
+        const type = key.slice(6);
+        if ((S.buildings || []).some(b => b.type === type)) keys.push(key);
+        continue;
+      }
+      if (key.indexOf('research:') === 0) {
+        const up = key.slice(9);
+        if (S.upgrades && S.upgrades[up]) keys.push(key);
+        continue;
+      }
+      if (key === 'reformerPowered') {
+        if ((S.buildings || []).some(b => b.type === 'reformer' && b.powered)) keys.push(key);
+        continue;
+      }
+    }
+    return keys;
+  }
+  // 설명 키들의 대사를 표정 포함 한 줄 단위로 평탄화
+  function flattenExplainLines(keys) {
+    const lines = [];
+    keys.forEach(key => {
+      const def = MIDORI_EXPLAIN[key]; if (!def) return;
+      def.lines.forEach(line => {
+        if (line && typeof line === 'object') lines.push({ text: line.text || '', emotion: line.emotion || def.emotion || 'laziness' });
+        else lines.push({ text: String(line || ''), emotion: def.emotion || 'laziness' });
+      });
+    });
+    return lines;
+  }
+  // T 버튼: 미도리가 지금까지의 설명을 처음부터 다시 들려준다.
+  // 게임 진행/보상은 그대로 두고, 설명 발생 기록만 초기화한 뒤 해금된 설명을 바로 재생한다.
   function resetTutorialExplanations() {
     let t = S.tutorial;
     if (!t) t = S.tutorial = { enabled: false, step: 0, hidden: false, flags: {} };
@@ -1008,7 +1042,13 @@ G.UI = (function () {
     t.conditional = { wildShown: false, wildMoved: prevMoved, raidWarnShown: false, turretResponseShown: false };
     tutorialAdvanceTimer = 0;
     renderTutorial();
-    flash('미도리의 설명을 다시 듣습니다');
+    // 이미 해금된 설명은 지금 바로 다시 재생하고, 그것들은 본 것으로 표시(나중에 중복 발생 방지).
+    // 아직 해금 안 된 설명은 explained가 비어 있으므로 다음에 처음 트리거될 때 자연히 나온다.
+    const keys = unlockedExplainKeys();
+    keys.forEach(k => { t.explained[k] = true; });
+    const lines = flattenExplainLines(keys);
+    if (lines.length) midoriRadio(lines, {});
+    else flash('미도리의 설명을 다시 듣습니다');
   }
 
   function tutorialFlag(key) {
