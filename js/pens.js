@@ -71,6 +71,10 @@ G.Pens = (function () {
       const arr = lines.maggot || [];
       return arr.length ? arr[Math.floor(Math.random() * arr.length)] : '';
     }
+    if (c.type === '독라') {
+      const arr = lines.dokura || [];
+      return arr.length ? arr[Math.floor(Math.random() * arr.length)] : '';
+    }
     const concept = c.stats ? (c.stats.개념 || 0) : 0;
     const group = concept <= 50 ? lines.low : (concept <= 100 ? lines.mid : lines.high);
     const suffix = speechSuffix(c.type);
@@ -144,26 +148,40 @@ G.Pens = (function () {
     // 사료 수요 — 사료분배기 범위 안: 선택 사료를 2배 소모(전역 자원). 범위 밖: 우리 바닥 운치(똥) 섭취.
     let demandPerMin = 0, unchiPerMin = 0;
     const feedInfo = (gx, gy) => (G.Factory.feedZoneInfo ? G.Factory.feedZoneInfo(gx, gy) : { inZone: false, type: '실장푸드', mult: 1 });
+    const penEffects = (pen) => {
+      if (G.Factory.environmentEffectsForBuilding) return G.Factory.environmentEffectsForBuilding(pen);
+      const env = G.Factory.environmentForBuilding ? G.Factory.environmentForBuilding(pen) : null;
+      return (env && env.effects) || {};
+    };
     const difficultyFoodMult = S.difficulty === 'breeding' ? 0.5 : 1;
     pens.forEach(p => p.creatures.forEach(c => {
+      const effects = penEffects(p);
       const fi = feedInfo(p.col + (c.px || 0.5), p.row + (c.py || 0.5));
       if (fi.inZone) { c._feedSource = 'global'; c._feedType = fi.type || '실장푸드'; c._feedMult = fi.mult || C.FEED_GROWTH_MULT || 2; }
       else { c._feedSource = 'pen'; c._feedType = '운치'; c._feedMult = 1; }   // 사료분배기 없음 → 똥 먹음
       c._fedRatio = 1;
-      demandPerMin += (C.FOOD_RATE[c.type] || 0) * c._feedMult * difficultyFoodMult;
+      demandPerMin += (C.FOOD_RATE[c.type] || 0) * c._feedMult * difficultyFoodMult / (effects.feedEfficiency || 1);
     }));
-    // 운치는 우리 안 개체만 배설(바닥에 누적). 배회 개체는 배설 안 함.
-    penned.forEach(c => { unchiPerMin += (C.FOOD_RATE[c.type] || 0) * C.UNCHI_MULT * difficultyFoodMult; });
+    // 운치 배설: '푸드'를 먹은 개체만 배설(바닥에 누적). 운치(똥)를 먹은 개체·배회 개체는 배설 안 함.
+    pens.forEach(p => {
+      const effects = penEffects(p);
+      p.creatures.forEach(c => {
+        if (c._feedType && c._feedType !== '운치') unchiPerMin += (C.FOOD_RATE[c.type] || 0) * C.UNCHI_MULT * difficultyFoodMult * (effects.penUnchi || 1);
+      });
+    });
     S.foodDemandPerMin = demandPerMin; S.unchiPerMin = unchiPerMin;
 
     function takeFeed(type, amount) {
       if (amount <= 0) return 1;
       if (type === '운치') { const got = Math.min(amount, S.unchi || 0); S.unchi -= got; return got / amount; }
       if (type === '짓소산 푸드') { const got = Math.min(amount, S.jissoFood || 0); S.jissoFood -= got; return got / amount; }
+      if (type === '우마이푸드') { const got = Math.min(amount, S.umaiFood || 0); S.umaiFood -= got; return got / amount; }
+      if (type === '다이어트푸드') { const got = Math.min(amount, S.dietFood || 0); S.dietFood -= got; return got / amount; }
       const got = Math.min(amount, S.food || 0); S.food -= got; return got / amount;
     }
     pens.forEach(p => p.creatures.forEach(c => {
-      const need = (C.FOOD_RATE[c.type] || 0) * (c._feedMult || 1) * difficultyFoodMult / 60 * dt;
+      const effects = penEffects(p);
+      const need = (C.FOOD_RATE[c.type] || 0) * (c._feedMult || 1) * difficultyFoodMult / (effects.feedEfficiency || 1) / 60 * dt;
       if (c._feedSource === 'pen') {                    // 우리 바닥 운치(똥) 소모
         if (need <= 0) { c._fedRatio = 1; }
         else { const got = Math.min(need, p.unchi || 0); p.unchi -= got; c._fedRatio = got / need; }
@@ -190,28 +208,57 @@ G.Pens = (function () {
     // 펜별: 성장 + 우리내 배회 + 포식
     for (const pen of pens) {
       const list = pen.creatures;
+      const effects = penEffects(pen);
       // 운치 누적: 우리 안 개체의 식욕에 비례. 상한=칸 비례 수용량. 오염도에 비례해 얼룩 표시.
       let penUnchiRate = 0;
-      for (const c of list) penUnchiRate += (C.FOOD_RATE[c.type] || 0) * C.UNCHI_MULT * difficultyFoodMult;
-      pen.unchi = Math.min(penUnchiMax(pen), (pen.unchi || 0) + penUnchiRate / 60 * dt);
+      for (const c of list) { if (c._feedType && c._feedType !== '운치') penUnchiRate += (C.FOOD_RATE[c.type] || 0) * C.UNCHI_MULT * difficultyFoodMult; }
+      const madeUnchi = penUnchiRate * (effects.penUnchi || 1) / 60 * dt;
+      pen.unchi = Math.min(penUnchiMax(pen), (pen.unchi || 0) + madeUnchi);
+      if (G.Factory.recordUnchiProduced) G.Factory.recordUnchiProduced(madeUnchi);
       reconcilePenStains(pen);
       const pollution = penPollution(pen);   // 오염도%(0~100)
       // 성장 + 점액덩어리 숙성
       for (let i = list.length - 1; i >= 0; i--) {
         const c = list[i];
         G.Creatures.ageSlime(c, dt);
+        if (c.happyCircuit) {
+          G.Creatures.tickHappyCircuit(c, dt);
+          if ((c.hp || 0) <= 0) { convertToMinced(pen, c, list, i); continue; }
+        }
         if (c.noEatT > 0) c.noEatT -= dt;   // 자실장→성체 진화 직후 포식 금지 타이머
         const fed = c._fedRatio == null ? 1 : c._fedRatio;
         if (c.type === '독라' || c.type === '새끼독라') G.Creatures.changeHappy(c, -0.2 * dt);
         // 기본 성장은 사료가 없어도 진행. 사료를 실제로 먹으면 종류별 성장 배수/부가효과가 붙음.
         const isUnchi = c._feedSource === 'pen' || c._feedType === '운치';
-        const growsViaFeed = isUnchi || c._feedType === '실장푸드' || c._feedType === '짓소산 푸드';
+        const ft = c._feedType;
+        const growsViaFeed = isUnchi || ft === '실장푸드' || ft === '짓소산 푸드' || ft === '우마이푸드' || ft === '다이어트푸드';
         let growthSeconds = dt;
         if (growsViaFeed && fed > 0) {
-          const growthMult = isUnchi ? (C.UNCHI_GROWTH_MULT || 1.1) : 1;
-          growthSeconds = Math.max(growthSeconds, dt * fed * (c._feedMult || 1) * growthMult);
+          let growthMult = 1;
+          if (isUnchi) growthMult = (C.UNCHI_GROWTH_MULT || 1.1);
+          else if (ft === '우마이푸드') growthMult = (C.UMAI_GROWTH_MULT || 3);
+          else if (ft === '다이어트푸드') growthMult = (C.DIET_GROWTH_MULT || 0.5);
+          if (ft === '다이어트푸드') growthSeconds = dt * (1 - fed * (1 - growthMult));
+          else growthSeconds = Math.max(dt, dt * fed * (c._feedMult || 1) * growthMult);
+          // 특수 푸드 부가효과 (배회 개체와 동일)
+          if (c.stats && ft === '우마이푸드') G.Creatures.changeHappy(c, (C.UMAI_HAPPY_RATE || 0.3) * dt * fed);
         }
+        growthSeconds *= effects.penGrowth || 1;
         if (G.Creatures.feedGrowth(c, growthSeconds)) playPenSfx('grow', pen, c);
+        if (effects.penHappyRecovery) G.Creatures.changeHappy(c, 0.05 * effects.penHappyRecovery * dt);
+        if (c.stats && effects.penQualityChance && Math.random() < effects.penQualityChance * dt) c.stats.육질 = Math.min(C.STAT_MAX || 200, (c.stats.육질 || 0) + 1);
+        if (c.stats && effects.penQualityDrain && Math.random() < 0.05 * effects.penQualityDrain * dt) c.stats.육질 = Math.max(0, (c.stats.육질 || 0) - 1);
+        if (c.stats && effects.penConceptDrain && Math.random() < 0.05 * effects.penConceptDrain * dt) c.stats.개념 = Math.max(0, (c.stats.개념 || 0) - 1);
+        if (effects.healthDrain) {
+          G.Creatures.ensureVitals(c);
+          c.hp = Math.max(0, (c.hp || 0) - effects.healthDrain * dt);
+          if (c.hp <= 0) { convertToMinced(pen, c, list, i); continue; }
+        }
+        if (c.stats && effects.mutation && Math.random() < 0.002 * dt) {
+          const keys = ['육질', '개념', '크기'], key = keys[Math.floor(Math.random() * keys.length)];
+          const delta = Math.random() < 0.5 ? -5 : 5;
+          c.stats[key] = Math.max(0, Math.min(key === '크기' ? (C.SIZE_MAX || 50) : (C.STAT_MAX || 200), (c.stats[key] || 0) + delta));
+        }
         if (c._feedSource === 'pen') {       // 우리 바닥 운치(똥) → 3% 확률 육질 하락
           if (fed > 0 && c.stats && Math.random() < (C.UNCHI_EAT_QUALITY_DOWN || 0.03) * dt) c.stats.육질 = Math.max(0, (c.stats.육질 || 0) - 1);
         } else if (c._feedType === '짓소산 푸드') {  // 육질 1% / 행복 5% 확률 상승 + 체력 회복
@@ -230,8 +277,8 @@ G.Pens = (function () {
         }
         // 운치(똥/자원) 섭취 → 2% 확률 행복 하락(0이면 행복회로)
         if (isUnchi && fed > 0 && Math.random() < (C.UNCHI_HAPPY_DOWN_CHANCE || 0.02) * dt * fed) G.Creatures.changeHappy(c, -1);
-        // 실장푸드/짓소산 푸드 섭취 → 체력 회복
-        if ((c._feedType === '실장푸드' || c._feedType === '짓소산 푸드') && c._feedSource !== 'pen' && fed > 0) G.Creatures.recoverHp(c, (C.FOOD_HP_RECOVER || 4) * dt * fed);
+        // 실장푸드/짓소산 푸드/다이어트푸드 섭취 → 체력 회복
+        if ((c._feedType === '실장푸드' || c._feedType === '짓소산 푸드' || c._feedType === '다이어트푸드') && c._feedSource !== 'pen' && fed > 0) G.Creatures.recoverHp(c, (C.FOOD_HP_RECOVER || 4) * dt * fed);
         // 오염도가 높을수록 육질이 떨어질 확률↑. 오염으로 육질이 0이 되면 분쇄육이 된다.
         if (c.stats && pollution > 0 && (c.stats.육질 || 0) > 0 &&
             Math.random() < (C.POLLUTION_QUALITY_DOWN || 0.06) * dt * (pollution / 100)) {
@@ -443,7 +490,7 @@ G.Pens = (function () {
         target.stats.육질 = Math.max(0, (target.stats.육질 || 0) - C.ATTACK_DMG);
         target.hit = 0.3;
         if (target.stats.육질 <= 0) {
-          target.type = G.CREATURES[target.type].isAdult ? '독라' : '새끼독라'; // 데챠앗! 변신
+          G.Creatures.becomeDokura(target, G.CREATURES[target.type].isAdult ? '독라' : '새끼독라');
           target.scream = 1.2;
           if (G.Factory.burstAt) G.Factory.burstAt(pen.col + (target.px || 0.5), pen.row + (target.py || 0.5));
         }

@@ -6,7 +6,8 @@ window.G = window.G || {};
 G.Assets = (function () {
   const images = {};   // path -> {img, ok}
   const sounds = {};   // path -> Audio
-  const bgm = { index: 0, audio: null, started: false, unlockBound: false, mode: null, fade: null };
+  const bgm = { index: 0, audio: null, started: false, unlockBound: false, mode: null, modeIndex: 0, fade: null, introPlayed: false, volumeMult: 1 };
+  const ambience = { audio: null, path: null, active: false };
 
   function loadImage(path) {
     if (images[path]) return images[path];
@@ -70,7 +71,8 @@ G.Assets = (function () {
     const a = audioSettings();
     a.bgm = Math.max(0, Math.min(1, v));
     if (bgm.fade) bgm.fade.target = a.bgm;
-    else if (bgm.audio) bgm.audio.volume = a.bgm;
+    else if (bgm.audio) bgm.audio.volume = a.bgm * (bgm.volumeMult == null ? 1 : bgm.volumeMult);
+    if (ambience.audio) ambience.audio.volume = a.bgm;
   }
   function setSfxVolume(v) {
     audioSettings().sfx = Math.max(0, Math.min(1, v));
@@ -78,6 +80,7 @@ G.Assets = (function () {
 
   // 효과음: 파일이 있으면 재생, 없으면 조용히 무시
   function playSfx(key, opts) {
+    if (bgm.masterMuted) return;
     const path = G.SFX[key];
     if (!path) return;
     try {
@@ -103,7 +106,7 @@ G.Assets = (function () {
       if (bgm.audio) { bgm.audio.pause(); bgm.audio.onended = null; }
       const a = new Audio(path);
       bgm.audio = a;
-      a.volume = bgm.fade ? 0 : (audioSettings().bgm == null ? 0.35 : audioSettings().bgm);
+      a.volume = bgm.fade ? 0 : (audioSettings().bgm == null ? 0.35 : audioSettings().bgm) * (bgm.volumeMult == null ? 1 : bgm.volumeMult);
       a.loop = !!loop;
       a.onended = loop ? null : playNextBgm;
       const p = a.play();
@@ -113,12 +116,31 @@ G.Assets = (function () {
     }
   }
   function resumeCurrentMode() {
-    if (bgm.mode) playTrack(bgm.mode, true);
-    else playNextBgm();
+    if (Array.isArray(bgm.mode)) {
+      const list = bgm.mode;
+      if (!list.length) return;
+      const path = list[bgm.modeIndex % list.length];
+      bgm.modeIndex = (bgm.modeIndex + 1) % list.length;
+      playTrack(path, false);
+      return;
+    }
+    if (bgm.mode) { playTrack(bgm.mode, true); return; }
+    if (!bgm.introPlayed) { bgm.introPlayed = true; playTrack(G.BGM_WELCOME, false); return; }   // 시작/초기화 후 welcome 1회
+    playNextBgm();
   }
   function playNextBgm() {
+    if (Array.isArray(bgm.mode)) { resumeCurrentMode(); return; }
     if (bgm.mode) { playTrack(bgm.mode, true); return; }   // 오버라이드 중이면 그 곡 유지
     playTrack(nextBgmPath(), false);
+  }
+  // 게임 초기화/새 시작: 다음에 다시 welcome부터 재생되도록 리셋
+  function restartIntroBgm() {
+    bgm.introPlayed = false;
+    bgm.index = 0;
+    bgm.mode = null;
+    bgm.modeIndex = 0;
+    bgm.volumeMult = 1;
+    if (bgm.started) resumeCurrentMode();
   }
   // 배경음 모드 설정: path(문자열)=그 곡을 반복 재생, null=일반 재생목록 복귀.
   function setBgmMode(path) {
@@ -127,6 +149,43 @@ G.Assets = (function () {
     bgm.mode = desired;
     if (!bgm.started) return;   // 시작 전이면 startBgm에서 적용
     resumeCurrentMode();
+  }
+  function setBgmPlaylist(paths) {
+    bgm.mode = Array.isArray(paths) ? paths.slice() : null;
+    bgm.modeIndex = 0;
+    if (bgm.started) resumeCurrentMode();
+  }
+  function setBgmVolumeMultiplier(mult) {
+    bgm.volumeMult = Math.max(0, Math.min(1, mult == null ? 1 : mult));
+    if (bgm.audio) bgm.audio.volume = (audioSettings().bgm == null ? 0.35 : audioSettings().bgm) * bgm.volumeMult;
+  }
+  function setAudioMuted(muted) {
+    bgm.masterMuted = !!muted;
+    if (bgm.masterMuted) {
+      if (bgm.audio) bgm.audio.pause();
+      if (ambience.audio) ambience.audio.pause();
+      for (const path in sounds) if (sounds[path] && sounds[path].pause) sounds[path].pause();
+    } else if (bgm.started) {
+      if (bgm.audio) bgm.audio.play().catch(bindBgmUnlock);
+      else resumeCurrentMode();
+      if (ambience.active && ambience.audio) ambience.audio.play().catch(() => {});
+    }
+  }
+  function setAmbience(path, active) {
+    const enabled = !!active && !!path;
+    ambience.active = enabled;
+    if (!enabled) {
+      if (ambience.audio) ambience.audio.pause();
+      return;
+    }
+    if (!ambience.audio || ambience.path !== path) {
+      if (ambience.audio) ambience.audio.pause();
+      ambience.path = path;
+      ambience.audio = new Audio(path);
+      ambience.audio.loop = true;
+    }
+    ambience.audio.volume = audioSettings().bgm == null ? 0.35 : audioSettings().bgm;
+    if (!bgm.masterMuted) ambience.audio.play().catch(() => {});
   }
   function bindBgmUnlock() {
     if (bgm.unlockBound) return;
@@ -176,9 +235,9 @@ G.Assets = (function () {
       bgm.fade.t += Math.max(0, dt || 0);
       const p = Math.min(1, bgm.fade.t / bgm.fade.dur);
       const e = p * p * (3 - 2 * p);
-      bgm.audio.volume = Math.max(0, Math.min(1, bgm.fade.target * e));
+      bgm.audio.volume = Math.max(0, Math.min(1, bgm.fade.target * e * (bgm.volumeMult == null ? 1 : bgm.volumeMult)));
       if (p >= 1) {
-        bgm.audio.volume = bgm.fade.target;
+        bgm.audio.volume = bgm.fade.target * (bgm.volumeMult == null ? 1 : bgm.volumeMult);
         bgm.fade = null;
       }
     }
@@ -214,7 +273,7 @@ G.Assets = (function () {
   }
   // 장치: 현재 프레임(가로 4). 그렸으면 true.
   function drawDeviceSprite(ctx, type, x, y, w, h, frameIdx) {
-    const cols = type === 'packer' ? 8 : 4;
+    const cols = (type === 'warehouse' || type === 'largewarehouse') ? 1 : (type === 'packer' ? 8 : 4);
     const fi = frameIdx == null ? Math.floor(animT * (G.CONFIG.ANIM_FPS || 4)) % cols : frameIdx;
     return drawFrame(ctx, deviceImg(type), x, y, w, h, fi, 0, cols, 1);
   }
@@ -238,5 +297,5 @@ G.Assets = (function () {
     return true;
   }
 
-  return { loadImage, creatureImg, deviceImg, productImg, bgImg, drawOrPlaceholder, playSfx, setBgmVolume, setSfxVolume, startBgm, stopBgm, setBgmMode, preload, tick, frame, dirRow, drawCreatureSprite, drawCreatureNative, drawDeviceSprite, drawDeviceSpriteNamed, drawDeviceSheetFrame, drawDeviceFit, drawProductImage };
+  return { loadImage, creatureImg, deviceImg, productImg, bgImg, drawOrPlaceholder, playSfx, setBgmVolume, setSfxVolume, startBgm, stopBgm, setBgmMode, setBgmPlaylist, setBgmVolumeMultiplier, setAudioMuted, setAmbience, restartIntroBgm, preload, tick, frame, dirRow, drawCreatureSprite, drawCreatureNative, drawDeviceSprite, drawDeviceSpriteNamed, drawDeviceSheetFrame, drawDeviceFit, drawProductImage };
 })();

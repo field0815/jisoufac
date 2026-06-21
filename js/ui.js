@@ -8,7 +8,9 @@ G.UI = (function () {
   const C = G.CONFIG;
   const BASE = [{ id: 'park', label: '① 공원' }, { id: 'factory', label: '③ 공장' }];
   const OVL = [{ id: 'shop', label: '② 거래' }, { id: 'research', label: '④ 연구' }, { id: 'stats', label: '⑤ 통계' }];
-  let lastWhSig = '', lastSoldSig = '', lastPenSig = '', lastInventorySig = '';   // 재고/판매/우리 목록 갱신 시그니처
+  let lastWhSig = '', lastSoldSig = '', lastPenSig = '', lastInventorySig = '', lastBuyPenSig = '';   // 재고/판매/우리 목록 갱신 시그니처
+  let lastEndingRecordsSig = '';
+  let endingGalleryOpen = false;
   const PEN_SELL_TYPES = ['사육실장', '새끼사육실장', '독라', '새끼독라'];
   let optionsEl;
   let optionsTab = 'save';
@@ -77,7 +79,15 @@ G.UI = (function () {
       positionTitleTooltip(e.clientX, e.clientY);
     });
     document.addEventListener('mousemove', (e) => {
-      if (tooltipOwner) positionTitleTooltip(e.clientX, e.clientY);
+      if (!tooltipOwner) return;
+      // 소유 요소가 재렌더(innerHTML 교체)로 DOM에서 떨어져 나갔거나, 커서가 더 이상 그 위에
+      // 있지 않으면 숨긴다. (재렌더 시 mouseout이 발생하지 않아 툴팁이 남는 문제 방지)
+      if (!tooltipOwner.isConnected ||
+          !(e.target === tooltipOwner || (tooltipOwner.contains && tooltipOwner.contains(e.target)))) {
+        hideTitleTooltip();
+        return;
+      }
+      positionTitleTooltip(e.clientX, e.clientY);
     });
     document.addEventListener('mouseout', (e) => {
       if (!tooltipOwner) return;
@@ -116,6 +126,7 @@ G.UI = (function () {
   let typeFull = '';
   let typeOpts = null;
   let typeIndex = 0;
+  let radioComplete = null;
   function buildMidori() {
     const game = document.getElementById('game');
     const stat = document.createElement('div'); stat.id = 'radio-static'; game.appendChild(stat);
@@ -130,7 +141,7 @@ G.UI = (function () {
     portrait.style.backgroundImage = "url('assets/images/ui/midori.png')";
     game.appendChild(portrait);
     game.addEventListener('click', (e) => {
-      if (!G.dialogPaused) return;
+      if (radioPhase === 'idle') return;
       if (e.target.closest && e.target.closest('.midori-close')) return;
       onRadioClick();
     });
@@ -156,7 +167,7 @@ G.UI = (function () {
     setRadioStatic(false);
     G.dialogPaused = false;
   }
-  function dismissRadio() { hideMidori(false); }
+  function dismissRadio() { radioComplete = null; hideMidori(false); }
   // 대사창 클릭: 치지직 → 타이핑 → 전체표시 → 다음 줄/종료 (한 단계씩 스킵)
   function onRadioClick() {
     if (radioPhase === 'static') { revealRadio(); return; }      // 치지직 스킵
@@ -166,7 +177,10 @@ G.UI = (function () {
         const next = radioQueue.shift();
         showRadio(next.text, next.opts);
       } else {
+        const done = radioComplete;
+        radioComplete = null;
         hideMidori(false);
+        if (done) setTimeout(done, 0);
       }
     }
   }
@@ -221,22 +235,21 @@ G.UI = (function () {
     }
     return html;
   }
-  // 무전: 치지직 효과 → 미연시식 하단 대사창에 한 글자씩 타이핑 출력
+  function endingDialogueRunsLive() {
+    return !!(S.ending && S.ending.stage >= 3);
+  }
+  // 무전: 하단 대사창을 즉시 열고 한 글자씩 타이핑 출력
   function showRadio(text, opts) {
     opts = opts || {};
-    const stat = document.getElementById('radio-static');
     const m = document.getElementById('midori-panel');
     if (!m) return;
-    const dur = (G.QUEST_CONFIG && G.QUEST_CONFIG.STATIC_TIME) || 1.6;
-    G.dialogPaused = true;
+    G.dialogPaused = !endingDialogueRunsLive();
     radioPhase = 'static';
     pendingRadio = { text: String(text == null ? '' : text), opts };
     clearTimeout(staticTimer);
     clearInterval(typeTimer);
-    setRadioStatic(true);
-    if (stat) { stat.classList.add('on'); clearTimeout(stat._t); stat._t = setTimeout(() => stat.classList.remove('on'), dur * 1000); }
-    G.Assets.playSfx && G.Assets.playSfx('click', { volume: 0.3 });
-    staticTimer = setTimeout(() => revealRadio(), dur * 700);
+    setRadioStatic(false);
+    revealRadio();
   }
   // 치지직을 끝내고 초상화/대사창을 띄운 뒤 타이핑 시작
   function revealRadio() {
@@ -269,10 +282,15 @@ G.UI = (function () {
     const t = document.getElementById('midori-text');
     if (!t) { finishTypewriter(); return; }
     t.textContent = '';
-    const speed = (G.QUEST_CONFIG && G.QUEST_CONFIG.TYPE_SPEED) || 18;
+    const speed = (G.QUEST_CONFIG && G.QUEST_CONFIG.TYPE_SPEED) || 18;   // 글자당 ms
     clearInterval(typeTimer);
+    // 시간 기반 타이핑: 프레임이 밀려도(렉) 경과한 실제 시간만큼 글자를 한꺼번에 진행시켜
+    // 출력 속도가 FPS에 묶이지 않게 한다. (틱 1회 = 1글자가 아니라, 누적 경과시간으로 목표 글자수 계산)
+    const startAt = performance.now();
     typeTimer = setInterval(() => {
-      typeIndex++;
+      const target = Math.min(typeFull.length, Math.floor((performance.now() - startAt) / speed));
+      if (target <= typeIndex) return;
+      typeIndex = target;
       const t2 = document.getElementById('midori-text');
       if (t2) t2.textContent = typeFull.slice(0, typeIndex);
       if (typeIndex >= typeFull.length) finishTypewriter();
@@ -293,6 +311,7 @@ G.UI = (function () {
       return { text: String(line || ''), opts: Object.assign({}, opts || {}) };
     }).filter(x => x.text);
     if (!normalized.length) return;
+    radioComplete = opts && typeof opts.onComplete === 'function' ? opts.onComplete : null;
     radioQueue = normalized.slice(1);
     showRadio(normalized[0].text, normalized[0].opts);
   }
@@ -304,14 +323,14 @@ G.UI = (function () {
   function renderQuestTracker() {
     const el = document.getElementById('quest-tracker'); if (!el) return;
     const qs = (G.Factory && G.Factory.questsForUI) ? G.Factory.questsForUI().filter(q => q.accepted) : [];
-    const sig = qs.map(q => q.id + ':' + q.have + '/' + q.n + ':' + q.ready).join('|');
+    const sig = qs.map(q => q.id + ':' + q.delivered + '/' + q.n + ':' + q.have + ':' + q.ready).join('|');
     if (sig === lastQuestSig) return;
     lastQuestSig = sig;
     if (!qs.length) { el.style.display = 'none'; el.innerHTML = ''; return; }
     el.style.display = 'block';
     el.innerHTML = '<div class="qt-title">📻 진행 의뢰</div>' + qs.map(q =>
       `<div class="qt-row"><span class="qt-org" style="color:${q.color}">${q.org}</span>` +
-      `<span class="qt-item">${q.item} <b class="${q.ready ? 'q-ok' : 'q-no'}">${q.have}/${q.n}</b></span></div>`
+      `<span class="qt-item">${q.item} <b class="${(q.delivered >= q.n) ? 'q-ok' : 'q-no'}">${q.delivered}/${q.n}</b>${q.have ? ` <small>(보유 ${q.have})</small>` : ''}</span></div>`
     ).join('');
   }
   function buildQuestTracker() {
@@ -323,15 +342,16 @@ G.UI = (function () {
   function buildTopbar() {
     const bar = document.getElementById('topbar');
     bar.innerHTML = `
-      <div class="tb-res tb-money">💰 <span id="tb-money">0</span></div>
-      <div class="tb-res tb-power" title="전력">⚡ <span id="tb-power">0</span></div>
+      <div class="tb-res tb-money" title="공장을 굴리는 돈이야. 의뢰랑 판매로 벌어서 건물·연구·티어 승급에 쏟아붓는 거지. 인류가 망해도 돈은 돌더라?">💰 <span id="tb-money">0</span></div>
+      <div class="tb-res tb-power" title="전력 사용량/생산량이야. 노동교화소 같은 건 전기가 없으면 안 돌아가고, 다른 건물도 전력을 받으면 효율이 50% 올라. 발전소는 실장석을 굴려서 돌린다구.">⚡ <span id="tb-power">0</span></div>
+      <div class="tb-res tb-scrap" title="철조각 보유량이야. 폐허에서 노동석으로 채취하거나 의뢰 보상으로 얻어. 고급 건물·콜로니 티어 승급에 쓰여.">${productIcon('철조각', 'res-icon')}<span id="tb-scrap">0</span></div>
       <div class="tb-counts">
-        <span class="tb-ct" title="성체실장석">${creatureIcon('성체실장', 'res-icon')}<b id="tb-c-adult">0</b></span>
-        <span class="tb-ct" title="자실장">${creatureIcon('자실장', 'res-icon')}<b id="tb-c-child">0</b></span>
-        <span class="tb-ct" title="독라">${creatureIcon('독라', 'res-icon')}<b id="tb-c-dok">0</b></span>
-        <span class="tb-ct" title="사육실장 새끼">${creatureIcon('새끼사육실장', 'res-icon')}<b id="tb-c-petchild">0</b></span>
-        <span class="tb-ct" title="사육실장 성체">${creatureIcon('사육실장', 'res-icon')}<b id="tb-c-pet">0</b></span>
-        <span class="tb-ct tb-labor" title="노동석 (현재/최대)">${creatureIcon('독라', 'res-icon')}🔨<b id="tb-labor">0/0</b></span>
+        <span class="tb-ct" title="다 자란 실장석. 멸망한 세상에서 인류의 식량이자 연료이자 노리갯감이지. 도축하면 실장육이 나와.">${creatureIcon('성체실장', 'res-icon')}<b id="tb-c-adult">0</b></span>
+        <span class="tb-ct" title="실장석 새끼야. 아직 덜 자랐지만 키우면 성체가 돼. 성체는 새끼를 잡아먹으니까 우리를 따로 떼어놔야 해.">${creatureIcon('자실장', 'res-icon')}<b id="tb-c-child">0</b></span>
+        <span class="tb-ct" title="학대받고 비뚤어진 실장석, 독라야. 노동교화소에 넣으면 노동석으로 부려먹을 수 있어. 개념이 높을수록 일을 잘하지.">${creatureIcon('독라', 'res-icon')}<b id="tb-c-dok">0</b></span>
+        <span class="tb-ct" title="애호파 인간들이 떠받드는 고급 품종 사육실장, 그 새끼야. 새끼를 안 잡아먹고 개념도 높아서 비싸게 팔려.">${creatureIcon('새끼사육실장', 'res-icon')}<b id="tb-c-petchild">0</b></span>
+        <span class="tb-ct" title="곱게 자란 사육실장 성체. 티파티 같은 애호가들이 환장하는 비싼 상품이지.">${creatureIcon('사육실장', 'res-icon')}<b id="tb-c-pet">0</b></span>
+        <span class="tb-ct tb-labor" title="독라로 만든 일꾼, 노동석이야 (현재/최대). 아이템 회수·방어·청소·철조각 채취를 시킬 수 있고, 최대치는 노동교화소 수에 비례해.">${creatureIcon('독라', 'res-icon')}🔨<b id="tb-labor">0/0</b></span>
       </div>
       <div class="tb-feeds" id="tb-feeds"></div>
       <div class="research-queue-strip" id="research-queue-strip"></div>
@@ -362,12 +382,13 @@ G.UI = (function () {
       }
     });
     const rq = document.getElementById('research-queue-strip');
-    if (rq) rq.addEventListener('click', (e) => {
-      const btn = e.target.closest('button[data-cancel-top-research]');
+    if (rq) rq.addEventListener('pointerdown', (e) => {
+      const btn = e.target.closest('[data-cancel-top-research]');
       if (!btn) return;
-      cancelResearch('current');
-      renderResearch();
-      renderTop();
+      e.preventDefault();
+      e.stopPropagation();
+      if (btn.dataset.cancelTopResearch === 'current') cancelResearch('current');
+      else cancelResearch('queue', +btn.dataset.idx);
     });
     const powerEl = bar.querySelector('.tb-power');
     if (powerEl) powerEl.addEventListener('click', () => { fireMidoriExplain('tab:power'); });
@@ -467,6 +488,7 @@ G.UI = (function () {
   }
 
   function togglePause() {
+    if (endingGalleryOpen) return;
     G.paused = !G.paused;
     updatePauseIndicator();
     G.Assets.playSfx('click');
@@ -487,9 +509,15 @@ G.UI = (function () {
   const CHEATS = [
     { id: 'money', label: '💰 돈 +' + (C.CHEAT_MONEY || 9999999).toLocaleString() },
     { id: 'scrap', label: '🔩 철조각 +9,999' },
+    { id: 'electronics', label: '⚙ 전자부품 +999' },
+    { id: 'chaosmaggot', label: '🟣 카오스 구더기 +99' },
+    { id: 'achievements', label: '🏆 모든 업적·기념물 개방' },
     { id: 'creatures', label: '🐾 실장석 +' + (C.CHEAT_CREATURES || 10) + '마리' },
     { id: 'research', label: '🔬 연구 즉시 완료' },
     { id: 'killinvaders', label: '☠ 모든 침입 실장석 소멸' },
+    { id: 'ending0', label: '🚀 엔딩 0단계: T4 도달' },
+    { id: 'ending1', label: '🚀 엔딩 1단계: 물자 완성' },
+    { id: 'ending2', label: '🚀 엔딩 2단계: 전력 완충' },
   ];
   function doHiddenCheat() { toggleCheatMenu(); }
   function buildCheatMenu() {
@@ -523,6 +551,29 @@ G.UI = (function () {
       for (let i = 0; i < 9999; i++) S.warehouse['철조각'].push({ type: '철조각', isProduct: false, amount: 1, stats: { 크기: 0 } });
       lastWhSig = ''; lastInventorySig = '';
       flash('철조각 +9,999');
+    } else if (id === 'chaosmaggot') {
+      if (!S.warehouse['카오스 구더기']) S.warehouse['카오스 구더기'] = [];
+      for (let i = 0; i < 99; i++) S.warehouse['카오스 구더기'].push({ id: G.uid(), type: '카오스 구더기', isProduct: false, amount: 1, stats: { 크기: 0 } });
+      lastWhSig = ''; lastInventorySig = '';
+      flash('카오스 구더기 +99');
+    } else if (id === 'electronics') {
+      if (!S.warehouse['전자부품']) S.warehouse['전자부품'] = [];
+      for (let i = 0; i < 999; i++) S.warehouse['전자부품'].push({ id: G.uid(), type: '전자부품', isProduct: false, amount: 1, stats: { 크기: 0 } });
+      lastWhSig = ''; lastInventorySig = '';
+      flash('전자부품 +999');
+    } else if (id === 'achievements') {
+      const stats = S.achievementStats || (S.achievementStats = {});
+      Object.assign(stats, { pets: 100, creatures: 1000, labor: 50, meat: 1000, products: 10000, chaosMaggots: 3, powerUsed: 1000, unchi: 100000 });
+      stats.productTypes = stats.productTypes || {};
+      Object.keys(G.PRODUCTS || {}).forEach(type => { stats.productTypes[type] = true; });
+      S.monumentsUnlocked = S.monumentsUnlocked || {};
+      S.monumentsNotified = S.monumentsNotified || {};
+      ((G.MENU.monument && G.MENU.monument.items) || []).forEach(type => {
+        S.monumentsUnlocked[type] = true;
+        S.monumentsNotified[type] = true;
+      });
+      if (G.Factory && G.Factory.refreshMenu) G.Factory.refreshMenu();
+      flash('모든 업적 달성 · 기념물 개방');
     } else if (id === 'creatures') {
       for (let i = 0; i < (C.CHEAT_CREATURES || 10); i++) G.Factory.dropToFactory(G.Creatures.newAdult());
       flash('성체 ' + (C.CHEAT_CREATURES || 10) + '마리 추가');
@@ -534,8 +585,190 @@ G.UI = (function () {
     } else if (id === 'killinvaders') {
       const n = (G.Factory && G.Factory.clearInvaders) ? G.Factory.clearInvaders() : 0;
       flash('침입 실장석 ' + n + '마리 소멸');
+    } else if (/^ending[012]$/.test(id)) {
+      const stage = +id.slice(-1);
+      if (G.Factory && G.Factory.endingCheat) G.Factory.endingCheat(stage);
     }
     G.Assets.playSfx('click');
+  }
+
+  let endingModalEl = null;
+  function ensureEndingModal() {
+    if (endingModalEl) return endingModalEl;
+    endingModalEl = document.createElement('div');
+    endingModalEl.id = 'ending-modal';
+    endingModalEl.style.display = 'none';
+    document.getElementById('game').appendChild(endingModalEl);
+    return endingModalEl;
+  }
+  function closeEndingModal() {
+    if (endingModalEl) endingModalEl.style.display = 'none';
+    G.dialogPaused = false;
+  }
+  function showEndingConfirm(onYes) {
+    const el = ensureEndingModal();
+    G.dialogPaused = true;
+    el.innerHTML = `<div class="ending-modal-box"><h3>경고</h3>
+      <p>이 의뢰는 엔딩으로 진행하는 마지막 의뢰입니다.<br>의뢰를 수행하는 동안 많은 어려움이 있으며, 되돌릴 수 없습니다.</p>
+      <div class="ending-modal-actions"><button data-ending-answer="yes">예</button><button data-ending-answer="no">아니오</button></div></div>`;
+    el.style.display = 'flex';
+    el.querySelector('[data-ending-answer="yes"]').onclick = () => { closeEndingModal(); if (onYes) onYes(); };
+    el.querySelector('[data-ending-answer="no"]').onclick = closeEndingModal;
+  }
+  function showEndingChoice(onChoose) {
+    const el = ensureEndingModal();
+    G.dialogPaused = !endingDialogueRunsLive();
+    el.innerHTML = `<div class="ending-modal-box ending-choice-box"><h3>마지막 선택</h3>
+      <div class="ending-choice-list">
+        <button data-ending-choice="1">공장을 잘 부탁해, 미도리.</button>
+        <button data-ending-choice="2">나도 여기 남을거야.</button>
+        <button data-ending-choice="3">탈출할 자격이 있는건 너와 나 뿐이지.</button>
+      </div></div>`;
+    el.style.display = 'flex';
+    el.querySelectorAll('[data-ending-choice]').forEach(btn => btn.onclick = () => {
+      const choice = +btn.dataset.endingChoice;
+      closeEndingModal();
+      if (onChoose) onChoose(choice);
+    });
+  }
+  function showEndingSubChoice(onChoose) {
+    const el = ensureEndingModal();
+    G.dialogPaused = !endingDialogueRunsLive();
+    el.innerHTML = `<div class="ending-modal-box ending-choice-box"><h3>미도리와 함께 탈출한다</h3>
+      <div class="ending-choice-list">
+        <button data-ending-sub="1">이 모든 걸 준비한건 우리 둘이잖아.</button>
+        <button data-ending-sub="2">네 공이 큰데 너를 두고 가는건 말도 안돼.</button>
+      </div></div>`;
+    el.style.display = 'flex';
+    el.querySelectorAll('[data-ending-sub]').forEach(btn => btn.onclick = () => {
+      closeEndingModal();
+      if (onChoose) onChoose(+btn.dataset.endingSub);
+    });
+  }
+  let endingCinematicEl = null;
+  function ensureEndingCinematic() {
+    if (endingCinematicEl) return endingCinematicEl;
+    endingCinematicEl = document.createElement('div');
+    endingCinematicEl.id = 'ending-cinematic';
+    endingCinematicEl.style.display = 'none';
+    endingCinematicEl.innerHTML = `<div class="ending-count"></div><img class="ending-earth"><img class="ending-art"><div class="ending-caption"></div><button class="ending-finish"></button>`;
+    document.getElementById('game').appendChild(endingCinematicEl);
+    return endingCinematicEl;
+  }
+  function waitMs(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+  async function runEndingCinematic(kind) {
+    const el = ensureEndingCinematic();
+    const count = el.querySelector('.ending-count'), earth = el.querySelector('.ending-earth'), art = el.querySelector('.ending-art');
+    const caption = el.querySelector('.ending-caption'), finish = el.querySelector('.ending-finish');
+    G.paused = false; G.dialogPaused = false; G.openingPaused = false; updatePauseIndicator();
+    G.Assets.setAudioMuted && G.Assets.setAudioMuted(true);
+    el.className = ''; el.style.display = 'flex'; count.style.display = 'block'; earth.className = 'ending-earth'; art.className = 'ending-art';
+    earth.style.display = art.style.display = finish.style.display = 'none'; caption.textContent = '';
+    for (let n = 5; n >= 1; n--) {
+      count.textContent = n;
+      if (n === 1) {
+        if (G.Factory && G.Factory.endingCountdownFinale) G.Factory.endingCountdownFinale();
+      } else if (G.Factory && G.Factory.endingCinematicShot) {
+        G.Factory.endingCinematicShot(5 - n, kind === 'together');
+      }
+      const countStarted = performance.now();
+      while (performance.now() - countStarted < 1000) {
+        if (n === 1 && G.Factory && G.Factory.endingCinematicTick) G.Factory.endingCinematicTick(0.05);
+        await waitMs(50);
+      }
+    }
+    count.style.display = 'none';
+    el.classList.add('launching');
+    if (G.Factory && G.Factory.endingLaunchStart) G.Factory.endingLaunchStart();
+    const started = performance.now();
+    while (performance.now() - started < 3200) {
+      const p = (performance.now() - started) / 3200;
+      if (G.Factory && G.Factory.endingLaunchFrame) G.Factory.endingLaunchFrame(p);
+      if (G.Factory && G.Factory.endingCinematicTick) G.Factory.endingCinematicTick(0.05);
+      await waitMs(50);
+    }
+    el.classList.add('blackout');
+    await waitMs(5000);
+    const id = kind === 'alone' ? 'alone' : (kind === 'stay' ? 'stay' : 'together');
+    if (G.EndingRecords) G.EndingRecords.unlock(id);
+    if (kind !== 'stay') {
+      earth.src = 'assets/images/ui/end_earth.png';
+      earth.style.display = 'block';
+      requestAnimationFrame(() => earth.classList.add('show'));
+      await waitMs(10000);
+      earth.classList.remove('show'); await waitMs(1000); earth.style.display = 'none';
+    }
+    const data = {
+      alone: { img: 'ending_alone.png', bgm: G.BGM_END_ALONE, title: '엔딩 1. 고마워 미도리.' },
+      stay: { img: 'ending_stay.png', bgm: G.BGM_END_STAY, title: '엔딩 2. 체류.' },
+      together: { img: 'ending_together.png', bgm: G.BGM_END_TOGETHER, title: '엔딩 3. 세상 끝까지 함께.' },
+    }[kind];
+    G.Assets.setAudioMuted && G.Assets.setAudioMuted(false);
+    G.Assets.setBgmVolumeMultiplier && G.Assets.setBgmVolumeMultiplier(1);
+    G.Assets.setBgmMode && G.Assets.setBgmMode(data.bgm);
+    art.src = 'assets/images/ui/' + data.img; art.style.display = 'block';
+    caption.textContent = data.title;
+    requestAnimationFrame(() => art.classList.add('show'));
+    finish.textContent = kind === 'stay' ? '계속 플레이' : '새 게임';
+    finish.style.display = 'block';
+    finish.onclick = () => {
+      el.style.display = 'none'; el.className = ''; art.className = 'ending-art'; G.openingPaused = false;
+      if (kind === 'stay') {
+        if (G.Factory && G.Factory.finishStayEnding) G.Factory.finishStayEnding();
+      } else openNewGameDialog();
+    };
+  }
+  // 통계창에서 다시 보는 엔딩은 게임 UI와 분리된 최상위 오버레이로 표시한다.
+  function showEndingGallery(id) {
+    const map = {
+      alone: ['ending_alone.png', G.BGM_END_ALONE, '엔딩 1. 고마워 미도리.'],
+      stay: ['ending_stay.png', G.BGM_END_STAY, '엔딩 2. 체류.'],
+      together: ['ending_together.png', G.BGM_END_TOGETHER, '엔딩 3. 세상 끝까지 함께.'],
+    };
+    const d = map[id];
+    if (!d) return;
+    const prev = document.getElementById('ending-gallery-overlay');
+    if (prev) prev.remove();
+    const wasPaused = !!G.paused;
+    endingGalleryOpen = true;
+    G.paused = true;
+    updatePauseIndicator();
+
+    const g = document.createElement('div');
+    g.id = 'ending-gallery-overlay';
+    g.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:#000;display:flex;align-items:center;justify-content:center;isolation:isolate;overflow:hidden;';
+    const img = document.createElement('img');
+    img.src = 'assets/images/ui/' + d[0];
+    img.alt = d[2];
+    img.style.cssText = 'position:relative;z-index:1;display:block;width:100vw;height:100vh;object-fit:contain;';
+    img.onerror = () => console.warn('[엔딩] 이미지 로드 실패', img.src);
+    const cap = document.createElement('div');
+    cap.textContent = d[2];
+    cap.style.cssText = 'position:absolute;left:50%;bottom:28px;z-index:2;transform:translateX(-50%);color:#fff;font-size:24px;font-weight:700;text-shadow:0 3px 10px #000;white-space:nowrap;';
+    const close = document.createElement('button');
+    close.textContent = '닫기';
+    close.style.cssText = 'position:absolute;right:28px;top:24px;z-index:3;padding:10px 20px;border:1px solid #fff;background:rgba(0,0,0,.72);color:#fff;font-size:16px;cursor:pointer;';
+    g.appendChild(img); g.appendChild(cap); g.appendChild(close);
+    document.body.appendChild(g);
+
+    G.Assets.setAudioMuted && G.Assets.setAudioMuted(false);
+    G.Assets.setBgmVolumeMultiplier && G.Assets.setBgmVolumeMultiplier(1);
+    G.Assets.setBgmMode && G.Assets.setBgmMode(d[1]);
+    G.Assets.startBgm && G.Assets.startBgm();
+
+    const closeFn = () => {
+      if (!endingGalleryOpen) return;
+      endingGalleryOpen = false;
+      g.remove();
+      G.paused = wasPaused;
+      updatePauseIndicator();
+      const ending = S.ending || {};
+      if (ending.infinite) G.Assets.setBgmMode && G.Assets.setBgmMode(G.BGM_END_STAY);
+      else if (ending.accepted && ending.stage >= 2) G.Assets.setBgmMode && G.Assets.setBgmMode(G.BGM_EXIT);
+      else if (ending.accepted && ending.stage >= 1) G.Assets.setBgmPlaylist && G.Assets.setBgmPlaylist(G.BGM_CLIMAX || []);
+      else G.Assets.setBgmMode && G.Assets.setBgmMode(null);
+    };
+    close.onclick = closeFn;
   }
 
   /* ---- 옵션 ----------------------------------------------------------- */
@@ -547,6 +780,7 @@ G.UI = (function () {
       <div class="opt-tabs">
         <button class="opt-tab" data-opt-tab="save">저장</button>
         <button class="opt-tab" data-opt-tab="audio">음량</button>
+        <button class="opt-tab" data-opt-tab="keys">단축키</button>
       </div>
       <div class="opt-pane" data-pane="save">
         <div class="opt-slots" id="opt-slots"></div>
@@ -562,10 +796,43 @@ G.UI = (function () {
       <div class="opt-pane" data-pane="audio">
         <label class="opt-slider">BGM <input type="range" min="0" max="100" step="1" data-volume="bgm"><b id="opt-bgm-val">0%</b></label>
         <label class="opt-slider">효과음 <input type="range" min="0" max="100" step="1" data-volume="sfx"><b id="opt-sfx-val">0%</b></label>
+      </div>
+      <div class="opt-pane opt-keys-pane" data-pane="keys">
+        <div class="opt-key-section">
+          <b>건설 단축키</b>
+          <div id="opt-build-hotkeys"></div>
+        </div>
+        <div class="opt-key-section">
+          <b>공장 조작</b>
+          <div class="opt-fixed-keys">
+            <span><kbd>W A S D</kbd><em>카메라 이동</em></span>
+            <span><kbd>마우스 휠</kbd><em>확대·축소</em></span>
+            <span><kbd>휠 드래그</kbd><em>화면 이동</em></span>
+            <span><kbd>E</kbd><em>컨베이어 벨트</em></span>
+            <span><kbd>Q</kbd><em>벽 건설</em></span>
+            <span><kbd>R</kbd><em>건물·복사 배치 회전</em></span>
+            <span><kbd>M</kbd><em>선택 건물 이동</em></span>
+            <span><kbd>F</kbd><em>주변 화물 정리</em></span>
+            <span><kbd>X + 드래그</kbd><em>우리 철거</em></span>
+            <span><kbd>Delete / Backspace</kbd><em>선택 대상 삭제</em></span>
+            <span><kbd>Esc / 우클릭</kbd><em>현재 작업 취소</em></span>
+          </div>
+        </div>
+        <div class="opt-key-section">
+          <b>편집·저장</b>
+          <div class="opt-fixed-keys">
+            <span><kbd>Ctrl + Z</kbd><em>실행 취소</em></span>
+            <span><kbd>Ctrl + C</kbd><em>선택 건물 복사</em></span>
+            <span><kbd>Ctrl + 0~9</kbd><em>복사 배치를 청사진으로 저장</em></span>
+            <span><kbd>Ctrl + S</kbd><em>슬롯 1 즉시 저장</em></span>
+            <span><kbd>Space</kbd><em>일시정지·재개</em></span>
+          </div>
+        </div>
       </div>`;
     btn.addEventListener('click', (e) => { e.stopPropagation(); toggleOptions(); });
     optionsEl.addEventListener('click', onOptionClick);
     optionsEl.addEventListener('input', onOptionInput);
+    optionsEl.addEventListener('change', onOptionChange);
     const importInput = document.getElementById('opt-import-input');
     if (importInput) importInput.addEventListener('change', (e) => {
       const file = e.target.files && e.target.files[0];
@@ -611,6 +878,33 @@ G.UI = (function () {
     if (sfx) sfx.value = Math.round((audio.sfx == null ? 1 : audio.sfx) * 100);
     const bv = document.getElementById('opt-bgm-val'); if (bv && bgm) bv.textContent = bgm.value + '%';
     const sv = document.getElementById('opt-sfx-val'); if (sv && sfx) sv.textContent = sfx.value + '%';
+    renderHotkeyOptions();
+  }
+  function renderHotkeyOptions() {
+    const wrap = document.getElementById('opt-build-hotkeys');
+    if (!wrap || !G.Factory || !G.Factory.hotkeyBindings || !G.Factory.hotkeyToolOptions) return;
+    const bindings = G.Factory.hotkeyBindings();
+    const tools = G.Factory.hotkeyToolOptions();
+    const grouped = {};
+    for (const tool of tools) {
+      if (!grouped[tool.category]) grouped[tool.category] = [];
+      grouped[tool.category].push(tool);
+    }
+    const choices = Object.keys(grouped).map(cat =>
+      `<optgroup label="${cat}">${grouped[cat].map(t => `<option value="${t.type}">${t.name}</option>`).join('')}</optgroup>`
+    ).join('');
+    wrap.innerHTML = ['1','2','3','4','5','6','7','8','9','0'].map(key =>
+      `<label class="opt-key-bind"><kbd>${key}</kbd><select data-build-hotkey="${key}"><option value="">미지정</option>${choices}</select></label>`
+    ).join('');
+    wrap.querySelectorAll('[data-build-hotkey]').forEach(select => { select.value = bindings[select.dataset.buildHotkey] || ''; });
+  }
+  function onOptionChange(e) {
+    const select = e.target.closest('select[data-build-hotkey]');
+    if (!select || !G.Factory || !G.Factory.setBuildHotkey) return;
+    const ok = G.Factory.setBuildHotkey(select.dataset.buildHotkey, select.value);
+    optionsMessage = ok ? (select.value ? `${select.dataset.buildHotkey}번 단축키 변경` : `${select.dataset.buildHotkey}번 단축키 해제`) : '단축키 변경 실패';
+    renderOptions();
+    flash(optionsMessage);
   }
   function renderSaveSlots() {
     const wrap = document.getElementById('opt-slots'); if (!wrap || !G.Save || !G.Save.slotCount) return;
@@ -765,7 +1059,7 @@ G.UI = (function () {
       dialogue: ['좋아. 카메라 기초 조작법은 숙지했네. 그정도는 당연히 해야지.', '다음으로 넘어갈게. 생산의 기초 라인이야.'] },
     { title: '3-1. 출산대 설치', body: '생산 탭의 출산대를 1번 성체 우리 한 칸 옆 표시 위치에 설치하세요.', guide: { cat: 'production', item: 'birthing', adjacentPen: 0, size: { w: 2, h: 2 }, buildings: ['penbox'] }, done: () => tutorialFlag('built:birthing') },
     { title: '3-2. 성체 장착', body: '우리 안 성체실장을 드래그해 출산대에 장착하세요.', guide: { buildings: ['birthing', 'penbox'] }, done: () => tutorialFlag('loaded:birthing') },
-    { title: '3-3. 세면대 설치', body: '점액덩어리가 나오면 가공 탭에서 세면대를 설치하세요.', guide: { cat: 'processing', item: 'washbasin', buildings: ['birthing'] }, done: () => tutorialFlag('made:점액덩어리') && tutorialFlag('built:washbasin'),
+    { title: '3-3. 세면대 설치', body: '점액덩어리가 나오면 생산 탭에서 세면대를 설치하세요.', guide: { cat: 'production', item: 'washbasin', buildings: ['birthing'] }, done: () => tutorialFlag('made:점액덩어리') && tutorialFlag('built:washbasin'),
       dialogueEmotion: 'laziness',
       dialogue: ['점막덩어리는 방치하면 30초 뒤에 구더기로 바뀌어.', '구더기는 가공하지 않으면 가장 상품성이 없으니까, 일부러 구더기를 만들려는게 아니라면 세면대를 꼭 설치해야해.'] },
     { title: '3-4. 새끼 우리', body: '구더기, 엄지 또는 자실장이 나오면 새 우리를 설치해 성체와 분리하세요.', guide: { cat: 'production', item: 'penbox', buildings: ['washbasin'] }, done: () => (tutorialFlag('made:구더기') || tutorialFlag('made:엄지') || tutorialFlag('made:자실장')) && countBuildings('penbox') >= 2,
@@ -780,7 +1074,8 @@ G.UI = (function () {
       dialogueEmotion: 'laugh',
       dialogue: ['잘했어! 이게 식실장 공장의 가장 중요한 루틴이야. 탄생/성장/상품화 공정이지.', '단, 실장석들은 살아있는 생명체라는걸 명심해.', '기본 컨베이어 벨트는 2마리 이상 쌓이면 밖으로 도망칠 수도 있어!'] },
     { title: '4. 우리 확장', body: '생산 탭의 우리를 선택한 뒤 기존 우리에 대고 드래그해 우리를 확장하세요.', guide: { cat: 'production', item: 'penbox', buildings: ['penbox'] },
-      enter: t => { if (t.flags.tutorialPenBaseline == null) t.flags.tutorialPenBaseline = maxPenCells(); }, done: () => maxPenCells() > (+tutorialValue('tutorialPenBaseline') || 0) },
+      enter: t => { t.flags.tutorialPenBaseline = maxPenCells(); },
+      done: () => tutorialFlag('penExpanded') || maxPenCells() > 9 },
     { title: '4-1. 사료분배기', body: '특수 탭에서 사료분배기를 골라 새끼 우리에 설치하세요.', guide: { cat: 'special', item: 'feeder', buildings: ['penbox'] }, done: () => tutorialFlag('built:feeder'), reward: 500,
       dialogueEmotion: 'laziness',
       dialogue: ['사료분배기는 반 필수적이야. 실장석들은 사료가 없어도 운치를 먹으니 죽지는 않지만...', '그래도 빨리빨리 키우려면 사료 분배기를 설치해서 운치든 사료든 주는게 좋아.', '만약 특별한 사료를 공급한다면, 육질이나 개념을 올리는데 도움이 된다구?'] },
@@ -796,7 +1091,7 @@ G.UI = (function () {
     { title: '6-3. 운치 보관', body: '빼낸 운치를 창고 또는 콜로니 센터에 넣어 공정을 완성하세요.', guide: { buildings: ['warehouse', 'colony', 'grabber', 'longgrabber'] }, done: () => tutorialFlag('stored:운치') || (S.unchi || 0) > 0, reward: 500,
       dialogueEmotion: 'laugh',
       dialogue: ['잘했어. 육질이 0이 되면 실장석들은 살이 녹아내려서 죽어버려...', '만약 그렇게 분쇄육이 되어버리면, 마우스를 대고 F키를 눌러서 치울 수 있으니까 걱정마.'] },
-    { title: '7. 탈복기 설치', body: '성체 우리 한 칸 옆에 가공 탭의 탈복기를 설치하세요.', guide: { cat: 'processing', item: 'deshell', adjacentPen: 0, size: { w: 2, h: 2 }, buildings: ['penbox'] }, enterDialogueEmotion: 'laugh', enterDialogue: ['그럼 이제 돈을 벌어보죠!', '실장석은 그대로 팔 수 없어요. 제대로 손질해야 손님이 받아줘요.'], done: () => tutorialFlag('built:deshell') },
+    { title: '7. 탈복기 설치', body: '성체 우리 한 칸 옆에 가공 탭의 탈복기를 설치하세요.', guide: { cat: 'processing', item: 'deshell', adjacentPen: 0, size: { w: 2, h: 2 }, buildings: ['penbox'] }, enterDialogueEmotion: 'laugh', enterDialogue: ['그럼 이제 돈을 벌어보자!', '실장석은 그대로 팔 수 없어. 제대로 손질해야 손님이 받아줘.'], done: () => tutorialFlag('built:deshell') },
     { title: '7-1. 도축기 설치', body: '탈복기 옆에 도축기를 설치하세요.', guide: { cat: 'processing', item: 'slaughter', buildings: ['deshell'] }, done: () => tutorialFlag('built:slaughter') },
     { title: '7-2. 도축 화물 배출', body: '도축기 안의 화물을 꺼내도록 집게를 설치하세요.', guide: { cat: 'logistics', item: 'grabber', buildings: ['slaughter'] }, done: () => grabberCount() >= 3 },
     { title: '7-3. 보관 라인 연결', body: '실장육이 창고 또는 콜로니 센터로 들어가도록 집게나 컨베이어를 연결하세요.', guide: { cat: 'logistics', buildings: ['slaughter', 'warehouse', 'colony'] }, done: () => tutorialFlag('stored:실장육') },
@@ -867,20 +1162,56 @@ G.UI = (function () {
       { text: "...어? 실장석의 뇌로 연구할 수 있는건데 왜 인간이 모르는거냐고?", emotion: 'amaze' },
       { text: "...모르겠는데?", emotion: 'amaze' },
     ] },
+    'build:deshell': { emotion: 'normal', lines: [
+      "탈복기는 실장석의 옷과 머리를 벗겨내는 시설이야.",
+      "이른바 '독라'라는 상태가 되어버리지. 실장석들은 독라를 노예 취급하기 때문에 아주 반응이 꼴사납다니까?",
+      { text: "독라는 나중에 노동석으로도 만들 수 있으니까 기억해두라구?", emotion: 'laugh' },
+    ] },
+    'build:slaughter': { emotion: 'normal', lines: [
+      "도축기는 '독라'를 잘라서 실장육이랑 위석으로 분리하는 시설이야.",
+      { text: "실장육은 우리 공장의 초반 주력 상품이지! 돈은 여기서 나와.", emotion: 'greed' },
+      "위석은 종류별로 크기가 다른데, 분쇄기에 갈아서 조미료로 만들수도 있고, 여기저기 쓸모가 많아.",
+    ] },
+    'build:grinder': { emotion: 'normal', lines: [
+      "분쇄기는 뭐든지 갈아버리는 시설이야. 실장석, 실장육, 위석 전부.",
+      "위석을 갈면 조미료가 나오고, 못 쓰게 된 고기나 실장석은 분쇄육으로 만들 수 있어.",
+      { text: "쓸모없어진 똥벌레는 그냥 여기다 넣어버려. 깔끔하지?", emotion: 'lol' },
+    ] },
+    'build:warehouse': { emotion: 'normal', lines: [
+      "창고는 생산한 물건을 보관하는 곳이야. 어디든 연결하면 화물이 쌓이지.",
+      "여기 쌓인 재고는 거래창에서 한꺼번에 팔 수 있어.",
+      { text: "생산 라인 끝에 하나쯤 붙여두면 물건이 바닥에 굴러다니지 않아서 편해.", emotion: 'laziness' },
+    ] },
+    'gridBought': { emotion: 'normal', lines: [
+      "새 그리드를 샀구나. 여기엔 폐허랑 잔해가 묻혀있어서, 노동석으로 철조각을 채취할 수 있어.",
+      { text: "그리고 멀리 떨어진 그리드일수록 철조각도 많고, 가끔 희귀한 자원도 튀어나오지.", emotion: 'greed' },
+      { text: "돈 좀 모이면 자꾸자꾸 넓혀두라구. 게으름 피우지 말고.", emotion: 'laziness' },
+    ] },
+    'firstSale': { emotion: 'laugh', lines: [
+      "첫 거래 성공! 근데 하나 알아둬. 같은 물건만 잔뜩 쏟아내면 시장이 포화돼서 값이 뚝뚝 떨어져.",
+      { text: "값이 떨어진 물건도 시간이 좀 지나면 다시 시세가 회복되니까 너무 걱정은 말고.", emotion: 'normal' },
+      { text: "그러니까 한 종류만 들이붓지 말고, 여러 제품을 골고루 파는 게 이익을 극대화하는 길이야. 게으름 피우지 말고 다양하게 굴려보라구.", emotion: 'laziness' },
+    ] },
+    'firstScrap': { emotion: 'greed', lines: [
+      "오, 철조각이다! 이게 은근 쏠쏠하다구.",
+      { text: "철조각으로는 그냥 돈으론 못 짓는, 좀 더 고급스러운 건물들을 지을 수 있어.", emotion: 'normal' },
+      { text: "콜로니 티어를 올릴 때도 쓰이니까 부지런히 모아두자구.", emotion: 'normal' },
+    ] },
+    'firstLabor': { emotion: 'laugh', lines: [
+      "드디어 노동석이 나왔네! 이제 독라 노예가 너 대신 일해줄 거야.",
+      { text: "노동석을 클릭하면 명령을 내릴 수 있어. 바닥 아이템 회수, 도망친 똥벌레 잡기, 방어, 청소... 그리고 철조각 채취까지.", emotion: 'normal' },
+      { text: "일단 강조된 '채취' 명령을 눌러봐. 노동석이 알아서 폐허를 뒤져 철조각을 캐올 거야.", emotion: 'normal' },
+      { text: "매번 명령 내리기 귀찮으면, 노동교화소에서 기본 명령을 정해두면 갓 만든 노동석이 그대로 따라.", emotion: 'laziness' },
+    ] },
     'research:가드레일벨트': { emotion: 'laziness', lines: [
       "실장석들은 레일에 적체되면 도망치려고 해.",
       { text: "그런 똥벌레들이 도망못치게 하는게 가드레일 벨트지.", emotion: 'laugh' },
       { text: "하지만 보통 컨베이어 벨트보다 비싸니까, 화물을 나를 때는 그냥 컨베이어 벨트를 쓰자!", emotion: 'normal' },
     ] },
     'research:횡단벨트': { emotion: 'normal', lines: [
-      "횡단벨트는 두 갈래의 벨트가 서로 교차해도 화물이 안 섞이게 해주는 물건이야.",
-      "라인이 복잡해지기 시작하면 슬슬 쓸 일이 생기지.",
-      { text: "뭐, 지금 네 공장 수준에선 아직 좀 이르려나?", emotion: 'laugh' },
-    ] },
-    'research:터널': { emotion: 'normal', lines: [
-      "터널은 화물을 땅 밑으로 보내서 다른 시설이나 벽 너머로 보내는 물건이야.",
-      "벨트를 빙 둘러 깔 필요 없이 깔끔하게 가로지를 수 있지.",
-      { text: "입구랑 출구를 짝맞춰서 설치하는 것만 잊지 마. 그정도는 할 수 있지?", emotion: 'laziness' },
+      "횡단벨트는 입구와 출구 사이를 건너뛰어 화물을 바로 보내는 장치야.",
+      "직선으로 최대 5칸까지 드래그해서 설치하면 돼.",
+      { text: "출구가 막히면 입구에서부터 화물을 받지 않으니까, 막힐 걱정도 덜하겠네.", emotion: 'laugh' },
     ] },
     'research:긴팔집게': { emotion: 'normal', lines: [
       "긴팔 집게는 보통 집게보다 팔이 길어. 멀리 떨어진 화물도 집어올 수 있지.",
@@ -974,6 +1305,21 @@ G.UI = (function () {
       "그 다음 시동이 걸리기 시작하면, '위석'을 투입해서 전력을 생산해. 여기서 생산되는 전력이 상당하지.",
       { text: "단, 카오스 발전소는 돌아가는 동안 제물이 낮은 확률로 파괴되니까 주기적으로 제물을 보충해줘.", emotion: 'sleep' },
     ] },
+    'research:카오스게이트': { emotion: 'amaze', lines: [
+      { text: '카오스 게이트...! 물류의 치트키!', emotion: 'amaze' },
+      { text: '엄청난 거리를 제약없이 보낼 수 있는 사기급 운송장치야.', emotion: 'laugh' },
+      { text: '좀 수상쩍은 힘을 쓰는거긴 하지만, 편하니까 상관없잖아?', emotion: 'laziness' },
+    ] },
+    'research:카오스포탑': { emotion: 'wrong', lines: [
+      { text: '드디어 카오스 파워를 무기로 쓰는 때가 와버렸네.', emotion: 'wrong' },
+      { text: '사거리 안에 있는 실장석들을 연속 체인 공격하는 무시무시한 무기야.', emotion: 'normal' },
+      { text: '똥벌레를 똥으로 바꿔주는 엄청난 힘이 있지... 조심하라구.', emotion: 'laugh' },
+    ] },
+    'research:구더기탄도미사일': { emotion: 'amaze', lines: [
+      { text: '구더기 탄도미사일...! 장난스럽지만 강력한 초장거리 무기야.', emotion: 'amaze' },
+      { text: '과거 비와호에서 실장석 로켓 대회가 열렸을 때 만들어졌다는 소문이 있어.', emotion: 'normal' },
+      { text: '조리실에서 구더기와 도돈파를 조합하고, 박격포에 장착하면 발사 가능해!', emotion: 'laugh' },
+    ] },
   };
 
   function midoriExplainEnabled() {
@@ -982,51 +1328,74 @@ G.UI = (function () {
   }
   function fireMidoriExplain(key) {
     const def = MIDORI_EXPLAIN[key];
-    if (!def || !midoriExplainEnabled()) return;
+    if (!def || !midoriExplainEnabled()) return false;
     const t = S.tutorial;
     if (!t.explained) t.explained = {};
-    if (t.explained[key]) return;
+    if (t.explained[key]) return false;
     t.explained[key] = true;
     midoriRadio(def.lines, { emotion: def.emotion || 'laziness' });
+    return true;
   }
-  function onResearchExplain(key) { if (key) fireMidoriExplain('research:' + key); }
-  function onReformerPowered() { fireMidoriExplain('reformerPowered'); }
-  // 현재 게임 상태에서 이미 해금되어 다시 들려줄 수 있는 설명 키 목록(정의 순서대로)
-  function unlockedExplainKeys() {
-    const keys = [];
-    for (const key of Object.keys(MIDORI_EXPLAIN)) {
-      if (key.indexOf('tab:') === 0) { keys.push(key); continue; }          // 탭 설명은 항상 해금
-      if (key.indexOf('build:') === 0) {
-        const type = key.slice(6);
-        if ((S.buildings || []).some(b => b.type === type)) keys.push(key);
-        continue;
-      }
-      if (key.indexOf('research:') === 0) {
-        const up = key.slice(9);
-        if (S.upgrades && S.upgrades[up]) keys.push(key);
-        continue;
-      }
-      if (key === 'reformerPowered') {
-        if ((S.buildings || []).some(b => b.type === 'reformer' && b.powered)) keys.push(key);
-        continue;
-      }
+  function onResearchExplain(key) {
+    if (!key) return;
+    if (key === '구더기탄도미사일') {
+      const def = MIDORI_EXPLAIN['research:' + key];
+      if (def) midoriRadio(def.lines, { emotion: def.emotion || 'amaze' });
+      return;
     }
-    return keys;
+    fireMidoriExplain('research:' + key);
   }
-  // 설명 키들의 대사를 표정 포함 한 줄 단위로 평탄화
-  function flattenExplainLines(keys) {
-    const lines = [];
-    keys.forEach(key => {
-      const def = MIDORI_EXPLAIN[key]; if (!def) return;
-      def.lines.forEach(line => {
-        if (line && typeof line === 'object') lines.push({ text: line.text || '', emotion: line.emotion || def.emotion || 'laziness' });
-        else lines.push({ text: String(line || ''), emotion: def.emotion || 'laziness' });
-      });
-    });
-    return lines;
+  function onReformerPowered() { fireMidoriExplain('reformerPowered'); }
+  function onGridBought() { fireMidoriExplain('gridBought'); }
+  function onScrapHarvested() { fireMidoriExplain('firstScrap'); }
+  function onFirstSale() { fireMidoriExplain('firstSale'); }
+  function onRedzoneWarehouseBlocked() {
+    if (S.redzoneWarehouseWarned) return;
+    S.redzoneWarehouseWarned = true;
+    midoriRadio([
+      { text: '적색지대는 오염지역이라, 여기에 창고를 설치하면 창고 물건이 전부 오염될수도 있어.', emotion: 'normal' },
+      { text: '물론 거기서도 똥벌레들을 키우고, 물건을 제작할수도 있지만... 아무래도 불편하겠지?', emotion: 'laziness' },
+    ], { emotion: 'normal' });
   }
-  // T 버튼: 미도리가 지금까지의 설명을 처음부터 다시 들려준다.
-  // 게임 진행/보상은 그대로 두고, 설명 발생 기록만 초기화한 뒤 해금된 설명을 바로 재생한다.
+  function onChaosMaggotFound() {
+    if (S.chaosMaggotMidoriShown) return;
+    S.chaosMaggotMidoriShown = true;
+    midoriRadio([
+      { text: '세상에, 카오스 구더기잖아?', emotion: 'amaze' },
+      { text: '살아남기 위해 위석으로 온몸을 감싼 카오스 실장석이야. 어떤 존재로든 우화할 수 있는 존재지...', emotion: 'normal' },
+      { text: '사용할 수 있는 방법이 아주 많아서 비싸게 팔 수 있을거야.', emotion: 'greed' },
+      { text: '아니면 카오스 발전소를 지을 때 쓸수도 있어. 어느쪽이든 공장장 좋을대로 해!', emotion: 'laugh' },
+    ], { emotion: 'amaze' });
+  }
+  function onElectronicPartsFound() {
+    if (S.electronicPartsMidoriShown) return;
+    S.electronicPartsMidoriShown = true;
+    midoriRadio([
+      { text: '오, 귀한 부품을 획득했네!', emotion: 'amaze' },
+      { text: '이건 더이상 생산되지 않는 부품이야. 폐허랑 유적에서만 찾을 수 있지.', emotion: 'normal' },
+      { text: '비싸게 팔수도 있겠지만... 연구소를 업그레이드할 때 쓸수도 있을걸?', emotion: 'laugh' },
+    ], { emotion: 'amaze' });
+  }
+  // 버려진 양식장에서 처음 수산물을 채취하면(튜토리얼 여부 무관) 미도리가 한 번 반응한다.
+  function onSeafoodHarvested() {
+    if (S.seafoodMidoriShown) return;
+    S.seafoodMidoriShown = true;
+    midoriRadio([
+      { text: '아직도 살아있는 생물이 남아있다고? 진짜? 대체 어디서 얻은거야?', emotion: 'wrong' },
+      { text: '후타바... 해산물? 여긴 어디지?', emotion: 'normal' },
+      { text: '잘 모르겠는데 혹시 바다에는 아직 생명의 싹이 남아있는걸까? 믿을만한지 모르겠지만...', emotion: 'sad' },
+      { text: '어쨌든 이건 진귀한 물건이야! 비싸게 팔 수 있겠어!', emotion: 'laugh' },
+    ], { emotion: 'normal' });
+  }
+  function onLaborProduced() {
+    // 첫 노동석 설명이 처음 발동하면 '채취' 명령 강조 힌트를 켠다(채취 한 번 쓰면 꺼짐).
+    if (fireMidoriExplain('firstLabor')) {
+      if (!S.tutorial.flags) S.tutorial.flags = {};
+      if (!S.tutorial.flags['laborMineUsed']) S.tutorial.flags['laborMineHint'] = true;
+    }
+  }
+  // T 버튼: 게임 진행/보상은 유지하고 설명 발생 기록만 초기화한다.
+  // 초기화한 설명은 관련 메뉴를 열거나 건물을 설치할 때 다시 나타난다.
   function resetTutorialExplanations() {
     let t = S.tutorial;
     if (!t) t = S.tutorial = { enabled: false, step: 0, hidden: false, flags: {} };
@@ -1042,13 +1411,20 @@ G.UI = (function () {
     t.conditional = { wildShown: false, wildMoved: prevMoved, raidWarnShown: false, turretResponseShown: false };
     tutorialAdvanceTimer = 0;
     renderTutorial();
-    // 이미 해금된 설명은 지금 바로 다시 재생하고, 그것들은 본 것으로 표시(나중에 중복 발생 방지).
-    // 아직 해금 안 된 설명은 explained가 비어 있으므로 다음에 처음 트리거될 때 자연히 나온다.
-    const keys = unlockedExplainKeys();
-    keys.forEach(k => { t.explained[k] = true; });
-    const lines = flattenExplainLines(keys);
-    if (lines.length) midoriRadio(lines, {});
-    else flash('미도리의 설명을 다시 듣습니다');
+    flash('설명이 초기화되었습니다. 관련 메뉴와 건물을 사용할 때 다시 표시됩니다.');
+  }
+
+  function fireBuildingExplain(type) {
+    // 기존 건물 설치 설명은 그대로 먼저 재생한다.
+    fireMidoriExplain('build:' + type);
+
+    // 이미 완료된 연구는 연구 완료 이벤트가 다시 발생하지 않으므로,
+    // 해당 건물을 설치했을 때 업그레이드 설명을 다시 들을 수 있게 한다.
+    const def = G.DEVICES && G.DEVICES[type];
+    const unlock = def && def.unlock;
+    if (unlock && S.upgrades && S.upgrades[unlock]) {
+      fireMidoriExplain('research:' + unlock);
+    }
   }
 
   function tutorialFlag(key) {
@@ -1064,7 +1440,7 @@ G.UI = (function () {
     if (key === 'parkCaptured') S.tutorial.flags[key] = (S.tutorial.flags[key] || 0) + 1;
     else S.tutorial.flags[key] = true;
     S.tutorial.reviewing = false;
-    if (key.indexOf('built:') === 0) fireMidoriExplain('build:' + key.slice(6));
+    if (key.indexOf('built:') === 0) fireBuildingExplain(key.slice(6));
   }
   function countBuildings(type) {
     return (S.buildings || []).filter(b => b.type === type).length;
@@ -1129,6 +1505,19 @@ G.UI = (function () {
       renderTutorial();
       G.Assets.playSfx('click');
     });
+  }
+  function renderTutorialRestoreButton(t) {
+    tutorialEl.style.display = 'block';
+    tutorialEl.classList.add('collapsed');
+    tutorialEl.innerHTML = `<button class="tut-restore" data-tut-restore="1">튜토리얼 보기</button>`;
+    const btn = tutorialEl.querySelector('[data-tut-restore]');
+    if (btn) btn.onpointerdown = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      t.hidden = false;
+      renderTutorial();
+      G.Assets.playSfx('click');
+    };
   }
   function enterTutorialStep(t, step) {
     if (!t || !step || t.enteredStep === t.step) return;
@@ -1204,9 +1593,7 @@ G.UI = (function () {
     const step = conditionalTutorialStep(t);
     if (!step) { tutorialEl.style.display = 'none'; clearTutorialHighlights(); return true; }
     if (t.hidden) {
-      tutorialEl.style.display = 'block';
-      tutorialEl.classList.add('collapsed');
-      tutorialEl.innerHTML = `<button class="tut-restore" data-tut-restore="1">튜토리얼 보기</button>`;
+      renderTutorialRestoreButton(t);
       return true;
     }
     if (tutorialEl.dataset.mode !== 'conditional' || !tutorialEl.querySelector('#tut-title')) {
@@ -1290,9 +1677,7 @@ G.UI = (function () {
     if (!t.enabled) { tutorialEl.style.display = 'none'; clearTutorialHighlights(); return; }
     if (t.completed) { renderConditionalTutorial(t); return; }
     if (t.hidden) {
-      tutorialEl.style.display = 'block';
-      tutorialEl.classList.add('collapsed');
-      tutorialEl.innerHTML = `<button class="tut-restore" data-tut-restore="1">튜토리얼 보기</button>`;
+      renderTutorialRestoreButton(t);
       return;
     }
     if (tutorialEl.dataset.mode !== 'basic' || !tutorialEl.querySelector('#tut-title')) {
@@ -1351,6 +1736,14 @@ G.UI = (function () {
     flashEl.textContent = msg; flashEl.classList.add('show');
     clearTimeout(flashEl._t); flashEl._t = setTimeout(() => flashEl.classList.remove('show'), 1400);
   }
+  let notifyEl;
+  // 중앙 상단 배너 알림(승급 완료 등 중요 이벤트용)
+  function notify(title, sub) {
+    if (!notifyEl) { notifyEl = document.createElement('div'); notifyEl.id = 'game-notify'; document.getElementById('game').appendChild(notifyEl); }
+    notifyEl.innerHTML = `<b>${escHtml(title)}</b>` + (sub ? `<span>${escHtml(sub)}</span>` : '');
+    notifyEl.classList.add('show');
+    clearTimeout(notifyEl._t); notifyEl._t = setTimeout(() => notifyEl.classList.remove('show'), 3200);
+  }
 
   /* ---- 정보창 -------------------------------------------------------- */
   let infoEl;
@@ -1405,16 +1798,29 @@ G.UI = (function () {
       <div class="ovl-body">
         <div class="stat-big">보유금 💰<b id="shop-money">0</b> · ${productIcon('실장푸드', 'res-icon')}실장푸드 <b id="shop-food">0</b></div>
         <div class="res-bar" id="shop-resbar"></div>
-        <h3>${productIcon('실장푸드', 'res-icon')}실장푸드 구매 (개당 ₩${C.FOOD_PRICE})</h3>
-        <div class="shop-buy" id="shop-buy-food"></div>
-        <h3>${productIcon('조미료', 'res-icon')}조미료 구매 (개당 💰<span id="shop-seasoning-price">0</span> · 1분마다 변동)</h3>
-        <div class="shop-buy" id="shop-buy-seasoning"></div>
-        <h3>특수 아이템 구매</h3>
-        <div class="shop-buy" id="shop-buy-special"></div>
-        <h3>🐾 실장석 구매</h3>
-        <div class="shop-buy" id="shop-buy-cre"></div>
-        <h3>${productIcon('짓소산 푸드', 'res-icon')}짓소산 푸드 판매 (개당 ₩${C.JISSO_FOOD_PRICE || 5})</h3>
-        <div class="warehouse-list" id="jissofood-sell-list"></div>
+        <h3>🛒 구매</h3>
+        <div class="shop-buy-board">
+          <div class="shop-buy-row">
+            <div class="shop-buy-meta">${productIcon('실장푸드', 'shop-icon')}<span><b>실장푸드</b><small>개당 ₩${C.FOOD_PRICE}</small></span></div>
+            <div class="shop-buy" id="shop-buy-food"></div>
+            <label class="shop-autobuy shop-buy-option"><input type="checkbox" id="autobuy-on"> 자동구매 · 재고 <input type="number" id="autobuy-threshold" min="0" class="ab-num">개 이하일 때 <input type="number" id="autobuy-batch" min="1" class="ab-num">개</label>
+          </div>
+          <div class="shop-buy-row">
+            <div class="shop-buy-meta">${productIcon('조미료', 'shop-icon')}<span><b>조미료</b><small>개당 ₩<span id="shop-seasoning-price">0</span> · 1분마다 변동</small></span></div>
+            <div class="shop-buy" id="shop-buy-seasoning"></div>
+          </div>
+          <div class="shop-buy-row">
+            <div class="shop-buy-meta"><span class="shop-symbol">◆</span><span><b>특수 아이템</b><small>희귀 소비품</small></span></div>
+            <div class="shop-buy" id="shop-buy-special"></div>
+          </div>
+          <div class="shop-buy-row">
+            <div class="shop-buy-meta"><span class="shop-symbol">♟</span><span><b>실장석</b><small>구매 즉시 우리로 이동</small></span></div>
+            <div class="shop-buy-cre-controls">
+              <label class="shop-autobuy">보낼 우리 <select id="buy-cre-pen"><option value="">자동 (가까운 우리)</option></select></label>
+              <div class="shop-buy" id="shop-buy-cre"></div>
+            </div>
+          </div>
+        </div>
         <h3>🏠 우리 실장석 판매 <span class="muted">(사육실장=새끼 기본가+개념↑, 성체는 절반 / 독라=육질·크기)</span></h3>
         <div class="warehouse-list" id="pen-sell-list"></div>
         <h3>⚙ 자동판매 (생기는 즉시 판매)</h3>
@@ -1430,6 +1836,12 @@ G.UI = (function () {
       b.addEventListener('click', () => buyFood(n));
       buyF.appendChild(b);
     });
+    const abOn = document.getElementById('autobuy-on');
+    const abTh = document.getElementById('autobuy-threshold');
+    const abBatch = document.getElementById('autobuy-batch');
+    if (abOn) abOn.addEventListener('change', () => { ensureAutoBuy().on = abOn.checked; flash('실장푸드 자동구매 ' + (abOn.checked ? 'ON' : 'OFF')); });
+    if (abTh) abTh.addEventListener('change', () => { ensureAutoBuy().threshold = Math.max(0, Math.floor(+abTh.value || 0)); });
+    if (abBatch) abBatch.addEventListener('change', () => { ensureAutoBuy().batch = Math.max(1, Math.floor(+abBatch.value || 1)); });
     const buyS = document.getElementById('shop-buy-seasoning');
     [1, 10, 50].forEach(n => {
       const b = document.createElement('button');
@@ -1448,11 +1860,11 @@ G.UI = (function () {
       buySp.appendChild(b);
     });
     const buyC = document.getElementById('shop-buy-cre');
-    [['성체실장', C.BUY_ADULT], ['자실장', C.BUY_CHILD]].forEach(([t, cost]) => {
+    ['성체실장', '자실장'].forEach(t => {
       const b = document.createElement('button');
-      b.className = 'shop-btn';
-      b.innerHTML = `${creatureIcon(t, 'shop-icon')}${creatureLabel(t)}<small>₩${cost.toLocaleString()}</small>`;
-      b.addEventListener('click', () => buyCreature(t, cost));
+      b.className = 'shop-btn'; b.dataset.buyCre = t;
+      b.innerHTML = `${creatureIcon(t, 'shop-icon')}${creatureLabel(t)}<small class="buy-cre-price">₩${creBuyPrice(t).toLocaleString()}</small>`;
+      b.addEventListener('click', () => buyCreature(t));
       buyC.appendChild(b);
     });
     // 자동판매 토글(생산품마다)
@@ -1474,7 +1886,7 @@ G.UI = (function () {
       <div class="ovl-head">④ 연구소 <button class="ovl-close">✕</button></div>
       <div class="ovl-body"><div class="research-status" id="research-status"></div><div class="research-tier-board" id="research-list"></div></div>`;
     const rlist = document.getElementById('research-list');
-    for (let t = 0; t <= 3; t++) {
+    for (let t = 0; t <= 4; t++) {
       const sec = document.createElement('section');
       sec.className = 'research-tier-section';
       sec.dataset.tier = t;
@@ -1490,13 +1902,13 @@ G.UI = (function () {
       const grid = rlist.querySelector(`[data-tier-grid="${upgradeTier(u, 1)}"]`) || rlist.querySelector('[data-tier-grid="0"]');
       grid.appendChild(card);
     });
-    document.getElementById('research-status').addEventListener('click', (e) => {
+    document.getElementById('research-status').addEventListener('pointerdown', (e) => {
       const btn = e.target.closest('button[data-cancel-research]');
       if (!btn) return;
+      e.preventDefault();
+      e.stopPropagation();
       if (btn.dataset.cancelResearch === 'current') cancelResearch('current');
       else cancelResearch('queue', +btn.dataset.idx);
-      renderResearch();
-      renderTop();
     });
 
     // ⑤ 통계 (판매는 거래탭으로 이동)
@@ -1507,6 +1919,8 @@ G.UI = (function () {
         <div class="stat-sub">화물 <span id="stat-cargo">0</span> · 배회 <span id="stat-wander">0</span> · 장치 <span id="stat-build">0</span>
           · 실장푸드 수요 <span id="stat-demand">0</span>/분 · 운치 <span id="stat-unchi">0</span>/분</div>
         <div class="stat-sub">자원 — ${productIcon('실장푸드', 'res-icon')}실장푸드 <b id="stat-food">0</b> · ${productIcon('짓소산 푸드', 'res-icon')}짓소산 푸드 <b id="stat-jisso-food">0</b> · ${productIcon('운치', 'res-icon')}운치 <b id="stat-unchistock">0</b></div>
+        <h3>🏁 엔딩 기록</h3>
+        <div class="ending-records" id="ending-records"></div>
         <h3>📦 소지 물자</h3>
         <div class="warehouse-list" id="inventory-list"></div>
         <h3>📈 누적 판매</h3>
@@ -1520,10 +1934,19 @@ G.UI = (function () {
       const r = G.Factory.sellAllWarehouse();
       flash(r.count ? ('판매! 💰+' + r.gained.toLocaleString() + ' (' + r.count + '개)') : '판매할 재고 없음');
     });
+    document.getElementById('ending-records').addEventListener('pointerdown', e => {
+      const btn = e.target.closest('[data-ending-record]');
+      if (!btn || btn.disabled) return;
+      e.preventDefault();
+      e.stopPropagation();
+      showEndingGallery(btn.dataset.endingRecord);
+    });
     document.getElementById('warehouse-list').addEventListener('click', (e) => {
-      const btn = e.target.closest('button[data-sell]'); if (!btn) return;
-      const n = btn.dataset.sell === 'all' ? Infinity : +btn.dataset.sell;
-      const r = G.Factory.sellSomeType(btn.dataset.type, n);
+      const btn = e.target.closest('button[data-sell], button[data-jfsell]'); if (!btn) return;
+      const isJissoFood = btn.dataset.jfsell != null;
+      const raw = isJissoFood ? btn.dataset.jfsell : btn.dataset.sell;
+      const n = raw === 'all' ? Infinity : +raw;
+      const r = isJissoFood ? G.Factory.sellJissoFood(n) : G.Factory.sellSomeType(btn.dataset.type, n);
       if (r.count) flash('판매 💰+' + r.gained.toLocaleString() + ' (' + r.count + '개)');
     });
     document.getElementById('pen-sell-list').addEventListener('click', (e) => {
@@ -1532,15 +1955,13 @@ G.UI = (function () {
       const r = G.Factory.sellPenCreatures(btn.dataset.type, n);
       flash(r.count ? ('판매 💰+' + r.gained.toLocaleString() + ' (' + r.count + '마리)') : '판매할 실장석 없음');
     });
-    document.getElementById('jissofood-sell-list').addEventListener('click', (e) => {
-      const btn = e.target.closest('button[data-jfsell]'); if (!btn) return;
-      const n = btn.dataset.jfsell === 'all' ? Infinity : +btn.dataset.jfsell;
-      const r = G.Factory.sellJissoFood(n);
-      flash(r.count ? ('판매 💰+' + r.gained.toLocaleString() + ' (' + r.count + '개)') : '판매할 짓소산 푸드 없음');
-    });
     buildPriceEditor();
   }
 
+  function ensureAutoBuy() {
+    if (!S.autoBuyFood || typeof S.autoBuyFood !== 'object') S.autoBuyFood = { on: false, threshold: 50, batch: 100 };
+    return S.autoBuyFood;
+  }
   function buyFood(n) {
     const cost = n * C.FOOD_PRICE;
     if (S.money < cost) { flash('돈 부족! (₩' + cost.toLocaleString() + ')'); return; }
@@ -1556,12 +1977,23 @@ G.UI = (function () {
     S.money -= cost; S.seasoning = Math.min(max, (S.seasoning || 0) + n); G.Assets.playSfx('click');
     flash('조미료 +' + n + ' 구매 (💰-' + cost.toLocaleString() + ')');
   }
-  function buyCreature(type, cost) {
+  function creBuyPrice(type) {
+    if (S.buyPrice && S.buyPrice[type] != null) return S.buyPrice[type];
+    return type === '성체실장' ? (C.BUY_ADULT || 10) : (C.BUY_CHILD || 1);
+  }
+  function buyCreature(type) {
+    const cost = creBuyPrice(type);
     if (S.money < cost) { flash('돈 부족! (₩' + cost.toLocaleString() + ')'); return; }
     const c = G.Creatures.newWild(type);
-    G.Factory.dropToFactory(c);
-    S.money -= cost; G.Assets.playSfx('click');
-    flash(creatureLabel(type) + ' 구매 (💰-' + cost.toLocaleString() + ')');
+    const penSel = document.getElementById('buy-cre-pen');
+    const penId = penSel && penSel.value ? +penSel.value : null;
+    G.Factory.dropToFactory(c, penId);
+    S.money -= cost;
+    if (!S.buyPrice) S.buyPrice = {};
+    S.buyPrice[type] = cost + 1;   // 살 때마다 1원 비싸짐
+    G.Assets.playSfx('click');
+    flash(creatureLabel(type) + ' 구매 (💰-' + cost.toLocaleString() + ') · 다음 ₩' + (cost + 1).toLocaleString());
+    renderShop();   // 구매가 라벨 갱신
   }
   function buySpecialItem(type) {
     const def = G.PRODUCTS[type];
@@ -1587,6 +2019,38 @@ G.UI = (function () {
     const lv = targetLevel - 1;
     return u.costMult ? Math.round(u.cost * Math.pow(u.costMult, lv)) : u.cost * targetLevel;
   }
+  function researchElectronicPartsCost(u, targetLevel) {
+    return upgradeTier(u, targetLevel) === 3 ? 1 : 0;
+  }
+  function researchMaterialCosts(u, targetLevel) {
+    const costs = Object.assign({}, (u && u.materials) || {});
+    const electronicParts = researchElectronicPartsCost(u, targetLevel);
+    if (electronicParts) costs['전자부품'] = (costs['전자부품'] || 0) + electronicParts;
+    return costs;
+  }
+  function researchMaterialsLabel(costs) {
+    return Object.keys(costs || {}).map(type => ` + ${type} ${(costs[type] || 0).toLocaleString()}`).join('');
+  }
+  function canAffordResearchMaterials(costs) {
+    return Object.keys(costs || {}).every(type => materialCount(type) >= costs[type]);
+  }
+  function materialCount(type) {
+    const list = S.warehouse && S.warehouse[type];
+    return Array.isArray(list) ? list.length : 0;
+  }
+  function takeMaterial(type, count) {
+    const list = S.warehouse && S.warehouse[type];
+    if (!Array.isArray(list) || list.length < count) return false;
+    list.splice(0, count);
+    return true;
+  }
+  function returnMaterial(type, count) {
+    if (!count) return;
+    if (!S.warehouse[type]) S.warehouse[type] = [];
+    for (let i = 0; i < count; i++) S.warehouse[type].push({
+      id: G.uid(), type, isProduct: false, amount: 1, stats: { 크기: 0 },
+    });
+  }
   function researchProgressKey(r) {
     return r ? (r.key + '|' + (r.targetLevel || 0)) : '';
   }
@@ -1601,6 +2065,7 @@ G.UI = (function () {
   }
   function upgradeTier(u, targetLevel) {
     const base = Math.max(0, u && u.tier || 0);
+    if (u && u.fixedTier) return base;
     if (!isLevelResearch(u)) return base;
     return Math.max(base, levelResearchTier(targetLevel || 1));
   }
@@ -1615,10 +2080,16 @@ G.UI = (function () {
     if (u.maxLevel && targetLevel > u.maxLevel) { flash('이미 연구 완료/예약됨'); return; }
     if ((S.researchQueue.length + (S.currentResearch ? 1 : 0)) >= (C.RESEARCH_QUEUE_MAX || 5)) { flash('연구 예약은 최대 ' + (C.RESEARCH_QUEUE_MAX || 5) + '개'); return; }
     const cost = researchCost(u, targetLevel);
+    const electronicPartsCost = researchElectronicPartsCost(u, targetLevel);
+    const materialCosts = researchMaterialCosts(u, targetLevel);
     if (S.money < cost) { flash('돈 부족! (₩' + cost.toLocaleString() + ')'); return; }
+    for (const type of Object.keys(materialCosts)) {
+      if (materialCount(type) < materialCosts[type]) { flash(type + ' 부족! (' + materialCosts[type].toLocaleString() + '개 필요)'); return; }
+    }
     S.money -= cost;
+    for (const type of Object.keys(materialCosts)) takeMaterial(type, materialCosts[type]);
     const saved = (S.researchProgressBank && S.researchProgressBank[u.key + '|' + targetLevel]) || 0;
-    S.researchQueue.push({ key: u.key, name: u.name, cost, targetLevel, savedProgress: saved });
+    S.researchQueue.push({ key: u.key, name: u.name, cost, electronicPartsCost, materialCosts, targetLevel, savedProgress: saved });
     G.Assets.playSfx('click');
     flash(u.name + ' Lv.' + targetLevel + ' 연구 예약' + (saved ? ' (진행도 이어서)' : '') + ' (💰-' + cost.toLocaleString() + ')');
   }
@@ -1633,12 +2104,17 @@ G.UI = (function () {
       }
       S.currentResearch = null;
       S.researchProgress = 0;
+      S.researchCancelHold = true;
     }
     else if (S.researchQueue && S.researchQueue[idx]) r = S.researchQueue.splice(idx, 1)[0];
     if (!r) return;
     S.money += r.cost || 0;
+    if (r.materialCosts) Object.keys(r.materialCosts).forEach(type => returnMaterial(type, r.materialCosts[type]));
+    else if (r.electronicPartsCost) returnMaterial('전자부품', r.electronicPartsCost);
     G.Assets.playSfx('click');
     flash(r.name + ' 연구 취소' + (which === 'current' ? ' (진행도 보존)' : '') + ' (💰+' + (r.cost || 0).toLocaleString() + ')');
+    renderResearch();
+    renderTop();
   }
 
   function buildPriceEditor() {
@@ -1660,6 +2136,18 @@ G.UI = (function () {
     else if (S.overlay === 'research') renderResearch();
   }
 
+  // 판매 카드(거래창): 위/아래 두 줄. 위=아이콘+이름+총액, 아래=개당가(+시세)+수량 버튼.
+  function sellCardHtml(iconHtml, name, count, total, unit, pctTxt, buttonsHtml) {
+    return `<div class="wh-item">
+      <div class="wh-top">${iconHtml}<span class="wh-name">${name}</span><small class="wh-count">×${count.toLocaleString()}</small><b class="wh-total">💰${total.toLocaleString()}</b></div>
+      <div class="wh-bot"><span class="unit">개당 💰${unit.toLocaleString()}${pctTxt}</span><span class="sell-mini">${buttonsHtml}</span></div>
+    </div>`;
+  }
+  function sellButtonsHtml(attr, type) {
+    const t = type != null ? ` data-type="${escAttr(type)}"` : '';
+    return ['1', '10', '100', 'all'].map(n => `<button data-${attr}="${n}"${t}>${n === 'all' ? '전부' : n}</button>`).join('');
+  }
+
   function renderPenSell() {
     // 우리 안 사육실장/독라 집계 (판매금지 우리는 제외)
     const groups = {}; PEN_SELL_TYPES.forEach(t => groups[t] = { n: 0, val: 0 });
@@ -1674,23 +2162,9 @@ G.UI = (function () {
       const g = groups[t];
       const unit = Math.round(g.val / g.n);
       const label = { 사육실장: '사육실장 성체', 새끼사육실장: '사육실장 새끼', 독라: '독라 성체', 새끼독라: '독라 새끼' }[t] || t;
-      return `<div class="wh-item">${creatureIcon(t, 'wh-icon')}<span class="wh-name">${label} ×${g.n} <small class="unit">개당 💰${unit.toLocaleString()}</small></span><b>💰${g.val.toLocaleString()}</b>
-        <span class="sell-mini"><button data-pensell="1" data-type="${t}">1</button><button data-pensell="10" data-type="${t}">10</button><button data-pensell="100" data-type="${t}">100</button><button data-pensell="all" data-type="${t}">전부</button></span></div>`;
+      return sellCardHtml(creatureIcon(t, 'wh-icon'), label, g.n, g.val, unit, '', sellButtonsHtml('pensell', t));
     }).join('');
     document.getElementById('pen-sell-list').innerHTML = rows || '<div class="muted">우리에 판매할 사육실장/독라 없음</div>';
-  }
-
-  let lastJfSig = '';
-  function renderJissoFoodSell() {
-    const el = document.getElementById('jissofood-sell-list'); if (!el) return;
-    const have = Math.floor(S.jissoFood || 0);
-    const unit = C.JISSO_FOOD_PRICE || 5;
-    const sig = String(have);
-    if (sig === lastJfSig) return;
-    lastJfSig = sig;
-    if (have <= 0) { el.innerHTML = '<div class="muted">짓소산 푸드 없음 (배합기로 생산)</div>'; return; }
-    el.innerHTML = `<div class="wh-item">${productIcon('짓소산 푸드', 'wh-icon')}<span class="wh-name">짓소산 푸드 ×${have} <small class="unit">개당 💰${unit.toLocaleString()}</small></span><b>💰${(have * unit).toLocaleString()}</b>
-      <span class="sell-mini"><button data-jfsell="1">1</button><button data-jfsell="10">10</button><button data-jfsell="100">100</button><button data-jfsell="all">전부</button></span></div>`;
   }
 
   function renderShop() {
@@ -1709,23 +2183,59 @@ G.UI = (function () {
       b.querySelector('small').textContent = '₩' + (n * sp).toLocaleString();
     });
     renderPenSell();
-    renderJissoFoodSell();
-    // 창고 재고(판매) — 변경 시에만 갱신(클릭 무효화 방지)
-    let total = 0;
+    const ab = ensureAutoBuy();
+    const abOn = document.getElementById('autobuy-on');
+    const abTh = document.getElementById('autobuy-threshold');
+    const abBatch = document.getElementById('autobuy-batch');
+    if (abOn && document.activeElement !== abOn) abOn.checked = !!ab.on;
+    if (abTh && document.activeElement !== abTh) abTh.value = ab.threshold;
+    if (abBatch && document.activeElement !== abBatch) abBatch.value = ab.batch;
+    document.querySelectorAll('#shop-buy-cre .shop-btn').forEach(b => {
+      const t = b.dataset.buyCre; if (!t) return;
+      const s = b.querySelector('.buy-cre-price'); if (s) s.textContent = '₩' + creBuyPrice(t).toLocaleString();
+    });
+    // 보낼 우리 목록 (바뀔 때만 갱신)
+    const penSel = document.getElementById('buy-cre-pen');
+    if (penSel && G.Pens && G.Pens.allPens) {
+      const pens = G.Pens.allPens().slice().sort((a, b) => a.id - b.id);
+      const sig = pens.map(p => p.id + ':' + (p.name || '')).join('|');
+      if (sig !== lastBuyPenSig) {
+        lastBuyPenSig = sig;
+        const cur = penSel.value;
+        penSel.innerHTML = '<option value="">자동 (가까운 우리)</option>' +
+          pens.map(p => `<option value="${p.id}">${p.name || (p.id + '번 우리')}</option>`).join('');
+        if (cur) penSel.value = cur;
+      }
+    }
+    // 창고 재고(판매) — 변경 시에만 갱신(클릭 무효화 방지). 시세(시장 포화/희소) 반영.
+    const mMult = (G.Factory && G.Factory.marketMult) ? (k) => G.Factory.marketMult(k) : () => 1;
+    const mPct = (G.Factory && G.Factory.marketPct) ? (k) => G.Factory.marketPct(k) : () => 0;
+    const jissoHave = Math.floor(S.jissoFood || 0);
+    const jissoUnit = C.JISSO_FOOD_PRICE || 5;
+    let total = jissoHave * jissoUnit;
     const whKeys = Object.keys(S.warehouse).filter(k => S.warehouse[k] && S.warehouse[k].length);
-    whKeys.forEach(k => S.warehouse[k].forEach(d => { total += (d.isProduct ? (d.price || 1) : 2); }));
+    const unitOf = (k) => {
+      const list = S.warehouse[k];
+      const base = list.reduce((s, d) => s + G.Creatures.cargoPrice(d), 0) / list.length;
+      return Math.max(1, Math.round(base * mMult(k)));
+    };
+    whKeys.forEach(k => { total += unitOf(k) * S.warehouse[k].length; });
     document.getElementById('wh-value').textContent = total.toLocaleString();
-    const whSig = whKeys.map(k => k + ':' + S.warehouse[k].length).join('|');
+    const whSig = '짓소산 푸드:' + jissoHave + '|' + whKeys.map(k => k + ':' + S.warehouse[k].length + ':' + mPct(k)).join('|');
     if (whSig !== lastWhSig) {
       lastWhSig = whSig;
-      const whHtml = whKeys.map(k => {
+      const jissoHtml = jissoHave > 0
+        ? sellCardHtml(productIcon('짓소산 푸드', 'wh-icon'), '짓소산 푸드', jissoHave, jissoHave * jissoUnit, jissoUnit, '', sellButtonsHtml('jfsell'))
+        : '';
+      const whHtml = jissoHtml + whKeys.map(k => {
         const list = S.warehouse[k];
-        const val = list.reduce((s, d) => s + (d.isProduct ? (d.price || 1) : 2), 0);
-        const unit = Math.round(val / list.length);
-        return `<div class="wh-item">${itemIcon(k, 'wh-icon')}<span class="wh-name">${k} ×${list.length} <small class="unit">개당 💰${unit.toLocaleString()}</small></span><b>💰${val.toLocaleString()}</b>
-          <span class="sell-mini"><button data-sell="1" data-type="${k}">1</button><button data-sell="10" data-type="${k}">10</button><button data-sell="100" data-type="${k}">100</button><button data-sell="all" data-type="${k}">전부</button></span></div>`;
+        const unit = unitOf(k);
+        const val = unit * list.length;
+        const pct = mPct(k);
+        const pctTxt = pct === 0 ? '' : ` <small class="mkt ${pct > 0 ? 'up' : 'down'}">${pct > 0 ? '+' : ''}${pct}%</small>`;
+        return sellCardHtml(itemIcon(k, 'wh-icon'), k, list.length, val, unit, pctTxt, sellButtonsHtml('sell', k));
       }).join('');
-      document.getElementById('warehouse-list').innerHTML = whHtml || '<div class="muted">재고 없음 (도축기 등으로 생산)</div>';
+      document.getElementById('warehouse-list').innerHTML = whHtml || '<div class="muted">판매할 재고 없음</div>';
     }
   }
 
@@ -1747,6 +2257,8 @@ G.UI = (function () {
       const lv = S.upgrades[u.key] || 0;
       const targetLevel = nextResearchLevel(u);
       const cost = researchCost(u, targetLevel);
+      const electronicPartsCost = researchElectronicPartsCost(u, targetLevel);
+      const materialCosts = researchMaterialCosts(u, targetLevel);
       card.querySelector('.rc-lv').textContent = lv;
       const done = u.maxLevel && targetLevel > u.maxLevel;
       const needTier = upgradeTier(u, targetLevel);
@@ -1756,9 +2268,9 @@ G.UI = (function () {
       if (tierLabel) tierLabel.textContent = '콜로니 T' + needTier + ' 연구';
       const tierLocked = (S.colonyTier || 0) < needTier;
       card.classList.toggle('locked', !!tierLocked);
-      const btn = card.querySelector('.rc-buy'); btn.textContent = done ? '완료/예약' : (tierLocked ? ('콜로니 T' + needTier + ' 필요') : '예약 ₩' + cost.toLocaleString());
+      const btn = card.querySelector('.rc-buy'); btn.textContent = done ? '완료/예약' : (tierLocked ? ('콜로니 T' + needTier + ' 필요') : '예약 ₩' + cost.toLocaleString() + researchMaterialsLabel(materialCosts));
       btn.classList.toggle('owned', !!done);
-      btn.classList.toggle('afford', !done && !tierLocked && S.money >= cost && ((S.researchQueue || []).length + (S.currentResearch ? 1 : 0)) < (C.RESEARCH_QUEUE_MAX || 5));
+      btn.classList.toggle('afford', !done && !tierLocked && S.money >= cost && canAffordResearchMaterials(materialCosts) && ((S.researchQueue || []).length + (S.currentResearch ? 1 : 0)) < (C.RESEARCH_QUEUE_MAX || 5));
     });
   }
 
@@ -1775,6 +2287,16 @@ G.UI = (function () {
     document.getElementById('stat-food').textContent = Math.floor(S.food);
     const jf = document.getElementById('stat-jisso-food'); if (jf) jf.textContent = Math.floor(S.jissoFood || 0);
     document.getElementById('stat-unchistock').textContent = Math.floor(S.unchi);
+    const er = document.getElementById('ending-records');
+    if (er) {
+      const records = G.EndingRecords ? G.EndingRecords.get() : {};
+      const defs = [['alone', '엔딩 1. 고마워 미도리.'], ['stay', '엔딩 2. 체류.'], ['together', '엔딩 3. 세상 끝까지 함께.']];
+      const endingRecordsSig = defs.map(d => d[0] + ':' + (records[d[0]] ? 1 : 0)).join('|');
+      if (endingRecordsSig !== lastEndingRecordsSig || !er.children.length) {
+        lastEndingRecordsSig = endingRecordsSig;
+        er.innerHTML = defs.map(d => `<button data-ending-record="${d[0]}" ${records[d[0]] ? '' : 'disabled'}>${records[d[0]] ? d[1] : '???'}</button>`).join('');
+      }
+    }
     renderInventoryStats();
     const soldSig = Object.keys(S.sold).filter(k => S.sold[k]).map(k => k + ':' + S.sold[k] + ':' + ((S.soldValueByType && S.soldValueByType[k]) || 0)).join('|');
     if (soldSig !== lastSoldSig) {
@@ -1816,6 +2338,8 @@ G.UI = (function () {
     return m + ':' + String(s).padStart(2, '0');
   }
   function raidTimerText() {
+    if (S.ending && S.ending.stage === 2) return '최종 공세 진행 중';
+    if (S.ending && S.ending.stage >= 3) return '발사 준비 완료';
     const raidStart = S.difficulty === 'breeding' ? 2400 : (C.RAID_START || 0);
     const untilUnlock = Math.max(0, raidStart - (S.playTime || 0));
     if (untilUnlock > 0) return '레이드 해금 ' + fmtTimer(untilUnlock);
@@ -1881,19 +2405,22 @@ G.UI = (function () {
     const cur = S.currentResearch;
     const q = S.researchQueue || [];
     if (!cur && !q.length) { el.innerHTML = '<span class="rq-empty">연구 없음</span>'; return; }
-    const queueText = q.length ? `<span class="rq-next">예약 ${q.length}</span>` : '';
+    const queueButtons = q.map((r, i) =>
+      `<button class="rq-next" data-cancel-top-research="queue" data-idx="${i}" title="클릭하면 예약 취소">${escAttr(r.name)} Lv.${r.targetLevel}</button>`
+    ).join('');
+    const queueText = queueButtons ? `<span class="rq-queued-top">${queueButtons}</span>` : '';
     if (cur) {
       const need = cur.cost || 1;
       const pct = Math.min(100, Math.floor(((S.researchProgress || 0) / Math.max(1, need)) * 100));
       el.innerHTML = `<div class="rq-main" title="${escAttr(cur.name)} 진행 중">
         <span class="rq-name">연구: ${escAttr(cur.name)} Lv.${cur.targetLevel || ''}</span>
-        <span class="rq-pct">${pct}% <button data-cancel-top-research="1" title="진행도 보존 후 취소">취소</button></span>
+        <span class="rq-pct">${pct}% <button data-cancel-top-research="current" title="진행도 보존 후 취소">취소</button></span>
         <span class="rq-bar"><i style="width:${pct}%"></i></span>
         <span class="rq-num">${Math.floor(S.researchProgress || 0).toLocaleString()}/${need.toLocaleString()}</span>
         ${queueText}
       </div>`;
     } else {
-      el.innerHTML = `<div class="rq-main idle"><span class="rq-name">대기 중</span>${queueText}</div>`;
+      el.innerHTML = `<div class="rq-main idle"><span class="rq-name">예약</span>${queueText}</div>`;
     }
   }
   function renderTop() {
@@ -1904,7 +2431,32 @@ G.UI = (function () {
       lastMoney = curMoney;
     }
     document.getElementById('tb-money').textContent = Math.floor(S.money).toLocaleString();
-    const pw = document.getElementById('tb-power'); if (pw) pw.textContent = Math.floor(S.powerUsed || 0).toLocaleString() + '/' + Math.floor(S.power || 0).toLocaleString();
+    const pw = document.getElementById('tb-power');
+    if (pw) {
+      const used = Math.floor(S.powerUsed || 0).toLocaleString();
+      const total = Math.floor(S.power || 0).toLocaleString();
+      pw.textContent = used + '/' + total;
+      const info = G.Factory && G.Factory.powerUsageBreakdown ? G.Factory.powerUsageBreakdown() : null;
+      const rows = obj => Object.entries(obj || {}).sort((a, b) => b[1] - a[1]).map(([name, n]) => name + ' ' + n.toLocaleString());
+      const useRows = info ? rows(info.use) : [];
+      const supplyRows = info ? rows(info.supply) : [];
+      const powerBox = pw.closest('.tb-power');
+      if (powerBox) {
+        const text = [
+          '전력 ' + used + '/' + total,
+          '',
+          '사용처',
+          ...(useRows.length ? useRows : ['없음']),
+          '',
+          '공급원',
+          ...(supplyRows.length ? supplyRows : ['없음']),
+        ].join('\n');
+        powerBox.setAttribute('title', text);
+        powerBox.dataset.nativeTitle = text;
+        if (tooltipOwner === powerBox && titleTooltipEl) titleTooltipEl.querySelector('.mt-text').textContent = text;
+      }
+    }
+    const sc = document.getElementById('tb-scrap'); if (sc) sc.textContent = warehouseCount('철조각').toLocaleString();
     // 우리 안 종류별 수(아이콘+숫자)
     const cnt = penCounts();
     const setCt = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
@@ -1925,9 +2477,10 @@ G.UI = (function () {
   }
 
   function afterStateLoad() {
-    lastWhSig = ''; lastSoldSig = ''; lastPenSig = ''; lastJfSig = '';
+    lastWhSig = ''; lastSoldSig = ''; lastPenSig = '';
     lastMoney = Math.floor(S.money);
     G.paused = false; G.dialogPaused = false; G.openingPaused = false; updatePauseIndicator();
+    if (endingModalEl) endingModalEl.style.display = 'none';
     closeOptions();
     const root = document.getElementById('overlay-root');
     if (root) root.style.display = 'none';
@@ -1939,8 +2492,11 @@ G.UI = (function () {
   }
 
   return {
-    init, switchScreen, showCreatureInfo, hideInfo, renderOverlay, renderTop, flash, afterStateLoad,
-    markTutorialAction, midoriRadio, showRadio, isBasicTutorialActive, tutorialGuide,
+    init, switchScreen, showCreatureInfo, hideInfo, renderOverlay, renderTop, flash, notify, afterStateLoad,
+    markTutorialAction, midoriRadio, showRadio, showEndingConfirm, showEndingChoice, showEndingSubChoice, runEndingCinematic, isBasicTutorialActive, tutorialGuide,
+    resumeSimulation: () => { G.paused = false; G.dialogPaused = false; G.openingPaused = false; updatePauseIndicator(); },
     onTutorialWildIntrusion, onTutorialRaidWarning, onResearchExplain, onReformerPowered,
+    onGridBought, onScrapHarvested, onLaborProduced, onFirstSale, onSeafoodHarvested,
+    onRedzoneWarehouseBlocked, onChaosMaggotFound, onElectronicPartsFound,
   };
 })();

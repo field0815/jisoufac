@@ -40,7 +40,7 @@ G.Creatures = (function () {
     data.행복 = (data.행복 == null) ? happyMax() : clamp(data.행복, 0, happyMax());
     return data;
   }
-  // 행복 증감. 행복이 0이 되면 '행복회로' 상태(개념=0, 정지). 다시 0 초과면 해제.
+  // 행복이 0이 되면 행복회로가 고정된다. 콘페이토 같은 명시적 치료만 상태를 해제한다.
   function changeHappy(data, amount) {
     if (!data) return;
     ensureVitals(data);
@@ -51,8 +51,6 @@ G.Creatures = (function () {
         data.happyCircuit = true;
         if (data.stats) data.stats.개념 = 0;     // 개념이 0으로 떨어짐
       }
-    } else if (data.happyCircuit) {
-      data.happyCircuit = false;                 // 행복이 회복되면 행복회로 해제
     }
   }
   // 체력 회복(최대=크기×hpScale). 실장푸드/짓소산 푸드 섭취 시 호출.
@@ -60,6 +58,28 @@ G.Creatures = (function () {
     if (!data || amount <= 0) return;
     const hm = hpMaxOf(data);
     data.hp = clamp((data.hp == null ? hm : data.hp) + amount, 0, hm);
+  }
+  function tickHappyCircuit(data, dt) {
+    if (!data || !data.happyCircuit || dt <= 0) return 0;
+    ensureVitals(data);
+    const drain = Math.min(data.hp || 0, (C.HAPPY_CIRCUIT_HP_DRAIN || 8) * dt);
+    data.hp = Math.max(0, (data.hp || 0) - drain);
+    data.행복 = clamp((data.행복 || 0) + drain, 0, happyMax());
+    return drain;
+  }
+  const DOKURA_BECOME_LINES = {
+    adult: ['독라가 되어버린데스...', '오로롱...', '이것이 현실일리 없는데스', '와, 와타시의 세레브한 옷이!'],
+    child: ['독라가 되어버린테치...', '오로롱...', '이것이 현실일리 없는테치', '와, 와타시의 세레브한 옷이!'],
+  };
+  function becomeDokura(data, type) {
+    if (!data) return data;
+    data.type = type || ((G.CREATURES[data.type] && G.CREATURES[data.type].isAdult) ? '독라' : '새끼독라');
+    ensureVitals(data);
+    data.행복 = Math.min(data.행복, 30);
+    const lines = data.type === '새끼독라' ? DOKURA_BECOME_LINES.child : DOKURA_BECOME_LINES.adult;
+    data.speech = lines[Math.floor(Math.random() * lines.length)];
+    data.speechT = 2.5;
+    return data;
   }
 
   function newAdult() {
@@ -89,14 +109,23 @@ G.Creatures = (function () {
     });
   }
 
-  // 출산: 부모 ±10, 크기는 type별 탄생 범위
+  // 출산: 부모 등급이 높을수록 양의 변이 확률과 상승폭이 감소한다.
   function breed(parentStats, childType) {
     const v = C.BREED_VARIANCE;
+    const grade = gradeOfStats(parentStats);
+    const gradeIdx = Math.max(0, (G.GRADES || []).indexOf(grade));
+    const upChance = (C.BREED_UP_CHANCE_BY_GRADE || [1])[gradeIdx] ?? 0.1;
+    const upMult = (C.BREED_UP_MULT_BY_GRADE || [1])[gradeIdx] ?? 0.1;
+    const inherit = value => {
+      const positive = Math.random() < upChance;
+      const delta = positive ? rnd(0, v * upMult) : rnd(-v, 0);
+      return value + delta;
+    };
     return ensureVitals({
       id: G.uid(), type: childType,
       stats: {
-        육질: bornQuality(parentStats.육질 + rnd(-v, v)),
-        개념: clamp(Math.round(parentStats.개념 + rnd(-v, v)), 1, statMax()),
+        육질: bornQuality(inherit(parentStats.육질)),
+        개념: clamp(Math.round(inherit(parentStats.개념)), 1, statMax()),
         크기: newSize(childType),
       },
       growth: 0,
@@ -193,6 +222,7 @@ G.Creatures = (function () {
       }
       return product.flatPrice;
     }
+    if (product && product.sellPrice != null) return product.sellPrice;   // 자원(농축운치 등) 정가
     if (productType === '사육실장' || productType === '새끼사육실장') {
       const p = G.State.prices.사육실장 || { base: 500, 개념: 5 };
       const base = p.크기역 != null ? 500 : (p.base != null ? p.base : 500);
@@ -210,6 +240,13 @@ G.Creatures = (function () {
     return Math.max(1, Math.round(v));
   }
 
+  // 창고 화물 1개의 판매가 (생산품=고유가, 비생산품=정가 sellPrice 또는 기본 2)
+  function cargoPrice(d) {
+    if (!d) return 0;
+    if (d.isProduct) return d.price || 1;
+    const p = G.PRODUCTS[d.type];
+    return (p && p.sellPrice != null) ? p.sellPrice : 2;
+  }
   // 가공기 출력 화물(생산품) 생성
   function makeProduct(productType, srcCreature) {
     const stats = srcCreature.stats || { 육질: 0, 개념: 0, 크기: 0 };
@@ -220,5 +257,5 @@ G.Creatures = (function () {
     };
   }
 
-  return { newAdult, newWild, breed, ageSlime, washClassify, grow, tryEvolveBySize, feedGrowth, priceOf, makeProduct, gradeOf, gradeOfStats, ensureVitals, hpMaxOf, changeHappy, recoverHp };
+  return { newAdult, newWild, breed, ageSlime, washClassify, grow, tryEvolveBySize, feedGrowth, priceOf, cargoPrice, makeProduct, gradeOf, gradeOfStats, ensureVitals, hpMaxOf, changeHappy, recoverHp, tickHappyCircuit, becomeDokura };
 })();

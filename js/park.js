@@ -136,12 +136,18 @@ G.Park = (function () {
     S.park.splice(i, 1);
     delete c.x; delete c.y; delete c.vx; delete c.vy; delete c.role; delete c.familyId;
     const box = (boxIdx != null && boxIdx >= 0) ? S.captureBoxes[boxIdx] : null;
-    let placed = false;
     if (box && box.targetPenId) {
       const pen = penList().find(p => p.id === box.targetPenId);
-      if (pen && G.Pens && G.Pens.addToPen) placed = G.Pens.addToPen(pen, c);   // 가득이면 false
+      if (pen && G.Pens && G.Pens.addToPen && G.Pens.addToPen(pen, c)) {
+        if (G.UI && G.UI.markTutorialAction) G.UI.markTutorialAction('parkCaptured');
+        G.Assets.playSfx('capture');
+        return;
+      }
+      G.Factory.dropToFactory(c, box.targetPenId, true);
+      if (G.UI && G.UI.flash) G.UI.flash((pen ? (pen.name || '지정 우리') + '가 가득 차서' : '지정한 우리를 찾을 수 없어') + ' 공장 바닥에 풀어놓았습니다.');
+    } else {
+      G.Factory.dropToFactory(c);
     }
-    if (!placed) G.Factory.dropToFactory(c);   // 자동/지정 우리 가득 → 기본 배치
     if (G.UI && G.UI.markTutorialAction) G.UI.markTutorialAction('parkCaptured');
     G.Assets.playSfx('capture');
   }
