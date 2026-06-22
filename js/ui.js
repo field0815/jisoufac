@@ -813,6 +813,7 @@ G.UI = (function () {
             <span><kbd>R</kbd><em>건물·복사 배치 회전</em></span>
             <span><kbd>M</kbd><em>선택 건물 이동</em></span>
             <span><kbd>F</kbd><em>주변 화물 정리</em></span>
+            <span><kbd>B</kbd><em>플레이어 인벤토리</em></span>
             <span><kbd>X + 드래그</kbd><em>우리 철거</em></span>
             <span><kbd>Delete / Backspace</kbd><em>선택 대상 삭제</em></span>
             <span><kbd>Esc / 우클릭</kbd><em>현재 작업 취소</em></span>
@@ -995,7 +996,7 @@ G.UI = (function () {
         <div class="ng-choices">
           <button data-difficulty="breeding"><b>사육</b><span>쉬움 · 시작 자금 ₩50,000 · 사료 소모 1/2 · 침입 40분 후 · 침입 규모 1/2</span></button>
           <button data-difficulty="park"><b>공원</b><span>보통 · 현재 기본 규칙</span></button>
-          <button data-difficulty="dokura" disabled><b>독라</b><span>어려움 · 추후 업데이트</span></button>
+          <button data-difficulty="dokura"><b>독라</b><span>어려움 · 튜토리얼 없음 · 침입 체력 2배 · 창고별 독립 인벤토리</span></button>
         </div>
         <div class="ng-actions"><button data-ng-cancel="1">취소</button></div>
       </div>`;
@@ -1007,7 +1008,8 @@ G.UI = (function () {
       const btn = e.target.closest('[data-difficulty]');
       if (!btn || btn.disabled) return;
       pendingDifficulty = btn.dataset.difficulty || 'park';
-      showTutorialChoice();
+      if (pendingDifficulty === 'dokura') startNewGame(false);
+      else showTutorialChoice();
       G.Assets.playSfx('click');
     });
   }
@@ -1022,13 +1024,13 @@ G.UI = (function () {
     newGameEl.querySelector('.ng-choices').innerHTML = `
       <button data-difficulty="breeding"><b>사육</b><span>쉬움 · 시작 자금 ₩50,000 · 사료 소모 1/2 · 침입 40분 후 · 침입 규모 1/2</span></button>
       <button data-difficulty="park"><b>공원</b><span>보통 · 현재 기본 규칙</span></button>
-      <button data-difficulty="dokura" disabled><b>독라</b><span>어려움 · 추후 업데이트</span></button>`;
+      <button data-difficulty="dokura"><b>독라</b><span>어려움 · 튜토리얼 없음 · 침입 체력 2배 · 창고별 독립 인벤토리</span></button>`;
   }
   function closeNewGameDialog() {
     if (newGameEl) newGameEl.style.display = 'none';
   }
   function showTutorialChoice() {
-    const label = pendingDifficulty === 'breeding' ? '사육' : '공원';
+    const label = pendingDifficulty === 'breeding' ? '사육' : (pendingDifficulty === 'dokura' ? '독라' : '공원');
     newGameEl.classList.add('tutorial-choice');
     newGameEl.querySelector('.ng-title').textContent = label + ' 난이도';
     newGameEl.querySelector('.ng-sub').textContent = '튜토리얼을 켜고 시작할까요?';
@@ -1037,7 +1039,8 @@ G.UI = (function () {
       <button data-tutorial-choice="no"><b>아니오</b><span>안내 없이 바로 시작합니다.</span></button>`;
   }
   function startNewGame(tutorial) {
-    const label = pendingDifficulty === 'breeding' ? '사육' : '공원';
+    const label = pendingDifficulty === 'breeding' ? '사육' : (pendingDifficulty === 'dokura' ? '독라' : '공원');
+    if (pendingDifficulty === 'dokura') tutorial = false;
     G.Save.reset({ difficulty: pendingDifficulty, tutorial: !!tutorial });
     optionsMessage = label + ' 난이도로 새 게임 시작';
     lastSaveSlotSig = '';
@@ -1962,8 +1965,15 @@ G.UI = (function () {
     if (!S.autoBuyFood || typeof S.autoBuyFood !== 'object') S.autoBuyFood = { on: false, threshold: 50, batch: 100 };
     return S.autoBuyFood;
   }
+  function playerInventoryHasRoom(n) {
+    const room = G.Factory && G.Factory.playerInventoryRoom ? G.Factory.playerInventoryRoom() : Infinity;
+    if (room >= n) return true;
+    flash('콜로니센터 인벤토리 공간 부족! (' + room.toLocaleString() + '칸 남음)');
+    return false;
+  }
   function buyFood(n) {
     const cost = n * C.FOOD_PRICE;
+    if (!playerInventoryHasRoom(n)) return;
     if (S.money < cost) { flash('돈 부족! (₩' + cost.toLocaleString() + ')'); return; }
     S.money -= cost; S.food += n; G.Assets.playSfx('click');
     flash('실장푸드 +' + n + ' 구매 (💰-' + cost.toLocaleString() + ')');
@@ -1972,6 +1982,7 @@ G.UI = (function () {
     const max = C.SEASONING_MAX || 50;
     n = Math.min(n, Math.max(0, max - (S.seasoning || 0)));
     if (n <= 0) { flash('조미료 비축 최대치(' + max + '개)'); return; }
+    if (!playerInventoryHasRoom(n)) return;
     const cost = n * Math.round(S.seasoningPrice || C.SEASONING_BASE);
     if (S.money < cost) { flash('돈 부족! (₩' + cost.toLocaleString() + ')'); return; }
     S.money -= cost; S.seasoning = Math.min(max, (S.seasoning || 0) + n); G.Assets.playSfx('click');
@@ -1999,6 +2010,7 @@ G.UI = (function () {
     const def = G.PRODUCTS[type];
     const cost = (def && def.shopPrice) || 0;
     if (!def || !cost) return;
+    if (!playerInventoryHasRoom(1)) return;
     if (S.money < cost) { flash('돈 부족! (₩' + cost.toLocaleString() + ')'); return; }
     S.money -= cost;
     if (!S.warehouse[type]) S.warehouse[type] = [];

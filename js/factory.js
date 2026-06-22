@@ -154,6 +154,12 @@ G.Factory = (function () {
   let turretTargetsSelected = [];
   let laborTarget = null;    // 노동석 명령 패널 대상(생물 data)
   let selectedWorkers = [];  // 드래그 선택된 노동석 data 목록
+  let inventoryWarehouse = null;
+  let warehouseInventoryEl = null;
+  let playerInventoryEl = null;
+  let inventoryRenderT = 0;
+  let playerInventorySig = '';
+  let warehouseInventorySig = '';
   let logTrimT = 0;          // produceLog 정리 타이머
   let autoBuyCd = 0;         // 실장푸드 자동구매 쿨다운
   const coinEffects = [];
@@ -169,7 +175,36 @@ G.Factory = (function () {
    *  - frameCache: 매 프레임 1회만 buildings를 분류(우리/창고/사료분배기/레드포인터) */
   const buildingById = new Map();
   let cargoIdx = new Map();
+  const SPATIAL_BUCKET = 8;
+  let wanderSpatial = new Map();
+  let cargoSpatial = new Map();
+  let renderView = { x0: 0, y0: 0, x1: 0, y1: 0 };
   const frameCache = { pens: [], warehouses: [], feedZones: [], birthZones: [], specialColliders: [] };
+  function spatialKey(gx, gy) { return Math.floor(gx / SPATIAL_BUCKET) + '|' + Math.floor(gy / SPATIAL_BUCKET); }
+  function spatialAdd(map, obj, gx, gy) {
+    const k = spatialKey(gx, gy), list = map.get(k);
+    if (list) list.push(obj); else map.set(k, [obj]);
+  }
+  function rebuildWanderSpatial() {
+    wanderSpatial = new Map();
+    for (const w of S.wanderers) if (!w._dead) spatialAdd(wanderSpatial, w, w.gx, w.gy);
+  }
+  function querySpatial(map, gx, gy, range) {
+    const out = [];
+    const bx0 = Math.floor((gx - range) / SPATIAL_BUCKET), bx1 = Math.floor((gx + range) / SPATIAL_BUCKET);
+    const by0 = Math.floor((gy - range) / SPATIAL_BUCKET), by1 = Math.floor((gy + range) / SPATIAL_BUCKET);
+    for (let bx = bx0; bx <= bx1; bx++) for (let by = by0; by <= by1; by++) {
+      const list = map.get(bx + '|' + by);
+      if (list) out.push(...list);
+    }
+    return out;
+  }
+  function nearbyWanderers(gx, gy, range) { return querySpatial(wanderSpatial, gx, gy, range); }
+  function nearbyCargo(gx, gy, range) { return querySpatial(cargoSpatial, gx, gy, range); }
+  function rebuildCargoSpatial() {
+    cargoSpatial = new Map();
+    for (const cg of S.cargo) if (!cg._dead) spatialAdd(cargoSpatial, cg, cg.gx, cg.gy);
+  }
   function cargoIdxAdd(cg) {
     const k = Math.floor(cg.gx) + '|' + Math.floor(cg.gy);
     const a = cargoIdx.get(k);
@@ -189,7 +224,11 @@ G.Factory = (function () {
       if (b.type === 'skewer' || b.type === 'techica') frameCache.specialColliders.push(b);
     }
     cargoIdx = new Map();
-    for (const cg of S.cargo) cargoIdxAdd(cg);
+    for (const cg of S.cargo) {
+      cargoIdxAdd(cg);
+    }
+    rebuildCargoSpatial();
+    rebuildWanderSpatial();
   }
 
   const occ = Array.from({ length: ROWS }, () => Array(COLS).fill(null));
@@ -218,10 +257,220 @@ G.Factory = (function () {
     buildWallPanel();
     buildBlueprintTab();
     buildLinggalButton();
+    buildInventoryPanels();
     if (!S.buildings.length) setupStart();
     generateRuinsNearOwned();
     ensureEnvironmentFeatures();
     refreshUnacceptedQuestRewards();
+  }
+  function buildInventoryPanels() {
+    const game = document.getElementById('game');
+    warehouseInventoryEl = document.createElement('div');
+    warehouseInventoryEl.id = 'warehouse-inventory-panel';
+    warehouseInventoryEl.className = 'inventory-panel inventory-left';
+    warehouseInventoryEl.style.display = 'none';
+    warehouseInventoryEl.innerHTML = '<div class="inventory-head"><b>창고</b><button data-inv-close="warehouse">×</button></div><div class="inventory-summary"></div><div class="inventory-items"></div><button class="inventory-upgrade">용량 업그레이드</button>';
+    playerInventoryEl = document.createElement('div');
+    playerInventoryEl.id = 'player-inventory-panel';
+    playerInventoryEl.className = 'inventory-panel inventory-right';
+    playerInventoryEl.style.display = 'none';
+    playerInventoryEl.innerHTML = '<div class="inventory-head"><b>콜로니센터 인벤토리</b><button data-inv-close="player">×</button></div><div class="inventory-summary">건설·연구·거래에 사용하는 플레이어 재고</div><div class="inventory-items"></div>';
+    game.appendChild(warehouseInventoryEl);
+    game.appendChild(playerInventoryEl);
+    game.addEventListener('click', e => {
+      const close = e.target.closest('[data-inv-close]');
+      if (close) {
+        if (close.dataset.invClose === 'warehouse') { warehouseInventoryEl.style.display = 'none'; inventoryWarehouse = null; }
+        else playerInventoryEl.style.display = 'none';
+        return;
+      }
+      if (e.target.closest('.inventory-upgrade') && inventoryWarehouse) upgradeLocalWarehouse(inventoryWarehouse);
+    });
+    [warehouseInventoryEl, playerInventoryEl].forEach(panel => {
+      panel.addEventListener('dragover', e => e.preventDefault());
+      panel.addEventListener('drop', e => {
+        e.preventDefault();
+        const raw = e.dataTransfer && e.dataTransfer.getData('application/x-siljang-inventory');
+        if (!raw) return;
+        let payload; try { payload = JSON.parse(raw); } catch (_) { return; }
+        const dest = panel === warehouseInventoryEl ? 'warehouse' : 'player';
+        transferInventoryStack(payload, dest);
+      });
+      panel.addEventListener('dragstart', e => {
+        const item = e.target.closest('[data-inv-type]');
+        if (!item || !e.dataTransfer) return;
+        e.dataTransfer.setData('application/x-siljang-inventory', JSON.stringify({
+          source: item.dataset.invSource, type: item.dataset.invType, max: +item.dataset.invCount || 1,
+        }));
+        e.dataTransfer.effectAllowed = 'move';
+      });
+    });
+    canvas.addEventListener('dragover', e => e.preventDefault());
+    canvas.addEventListener('drop', e => {
+      e.preventDefault();
+      const raw = e.dataTransfer && e.dataTransfer.getData('application/x-siljang-inventory');
+      if (!raw) return;
+      let payload; try { payload = JSON.parse(raw); } catch (_) { return; }
+      if (payload.source !== 'player') return;
+      const cell = screenToCell(e.clientX, e.clientY);
+      if (!cell) return;
+      const n = askInventoryAmount(payload.max, '배치할 수량');
+      if (n <= 0) return;
+      const items = takePlayerInventory(payload.type, n);
+      const dev = deviceAt(cell.col, cell.row);
+      items.forEach((data, i) => {
+        if (dev) {
+          if (!dropInto(dev, data, cell)) putPlayerInventory([data]);
+        } else dropFloorCargo(data, cell.col + (i % 3), cell.row + Math.floor(i / 3));
+      });
+      renderInventoryPanels(true);
+    });
+  }
+  function askInventoryAmount(max, label) {
+    const raw = window.prompt(`${label} (1~${max})`, String(max));
+    if (raw == null) return 0;
+    return clamp(Math.floor(+raw || 0), 0, max);
+  }
+  function playerResourceAmount(type) {
+    if (type === '실장푸드') return Math.floor(S.food || 0);
+    if (type === '짓소산 푸드') return Math.floor(S.jissoFood || 0);
+    if (type === '우마이푸드') return Math.floor(S.umaiFood || 0);
+    if (type === '다이어트푸드') return Math.floor(S.dietFood || 0);
+    if (type === '운치') return Math.floor(S.unchi || 0);
+    if (type === '조미료') return Math.floor(S.seasoning || 0);
+    return 0;
+  }
+  function playerStackCount(type) {
+    return playerResourceAmount(type) + ((S.warehouse[type] && S.warehouse[type].length) || 0);
+  }
+  function playerInventoryCapacity() {
+    return Infinity;
+  }
+  function playerInventoryCount() {
+    return playerInventoryTypes().reduce((sum, type) => sum + playerStackCount(type), 0);
+  }
+  function playerInventoryRoom() {
+    return Infinity;
+  }
+  function playerInventoryTypes() {
+    const set = new Set(Object.keys(S.warehouse || {}).filter(t => S.warehouse[t] && S.warehouse[t].length));
+    ['실장푸드', '짓소산 푸드', '우마이푸드', '다이어트푸드', '운치', '조미료'].forEach(t => { if (playerResourceAmount(t) > 0) set.add(t); });
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'ko'));
+  }
+  function takePlayerInventory(type, n) {
+    const out = [];
+    const resourceMap = { 실장푸드: 'food', '짓소산 푸드': 'jissoFood', 우마이푸드: 'umaiFood', 다이어트푸드: 'dietFood', 운치: 'unchi', 조미료: 'seasoning' };
+    const key = resourceMap[type];
+    if (key) {
+      const count = Math.min(n, Math.floor(S[key] || 0));
+      S[key] -= count;
+      if (count > 0) {
+        const data = resourceCargoData(type);
+        data.amount = count;
+        out.push(data);
+      }
+      return out;
+    }
+    const list = S.warehouse[type] || [];
+    return list.splice(0, Math.min(n, list.length));
+  }
+  function putPlayerInventory(items) {
+    const rejected = [];
+    const colony = S.buildings.find(b => b.type === 'colony') || null;
+    items.forEach(data => { if (!warehouseIntake(data, colony)) rejected.push(data); });
+    return rejected;
+  }
+  function transferInventoryStack(payload, dest) {
+    if (!payload || !payload.type || payload.source === dest) return;
+    const available = payload.source === 'player'
+      ? playerStackCount(payload.type)
+      : (inventoryWarehouse && inventoryOf(inventoryWarehouse)[payload.type] ? inventoryOf(inventoryWarehouse)[payload.type].length : 0);
+    const max = Math.min(payload.max || 100, available);
+    if (!max) return;
+    const n = askInventoryAmount(max, '옮길 수량');
+    if (n <= 0) return;
+    if (payload.source === 'player' && dest === 'warehouse') {
+      if (!inventoryWarehouse) return;
+      const room = warehouseCapacity(inventoryWarehouse) - inventoryCount(inventoryOf(inventoryWarehouse));
+      const items = takePlayerInventory(payload.type, Math.min(n, room));
+      items.forEach(data => {
+        if (!warehouseIntake(data, inventoryWarehouse)) putPlayerInventory([data]);
+      });
+    } else if (payload.source === 'warehouse' && dest === 'player' && inventoryWarehouse) {
+      const inv = inventoryOf(inventoryWarehouse);
+      const moveN = Math.min(n, playerInventoryRoom());
+      if (moveN <= 0) { G.UI.flash && G.UI.flash('콜로니센터 인벤토리가 가득 찼습니다.'); return; }
+      const items = (inv[payload.type] || []).splice(0, moveN);
+      const rejected = putPlayerInventory(items);
+      if (rejected.length) inv[payload.type].unshift(...rejected);
+    }
+    G.Assets.playSfx('click');
+    renderInventoryPanels(true);
+  }
+  function inventoryItemsHtml(types, countFn, source, capacity) {
+    const slots = [];
+    types.forEach(type => {
+      const n = countFn(type);
+      if (n <= 0) return;
+      slots.push(`<div class="inventory-item" draggable="true" title="${escAttr(FILTER_LABEL[type] || type)} ×${n.toLocaleString()}" data-inv-source="${source}" data-inv-type="${escAttr(type)}" data-inv-count="${n}">${deviceInfoItemIcon(type)}<span>${FILTER_LABEL[type] || type}</span><b>${n.toLocaleString()}</b></div>`);
+    });
+    // 저장 용량과 슬롯 수는 별개다. 같은 품목은 수량 전체를 한 슬롯에 합쳐 표시한다.
+    const slotLimit = Math.max(slots.length, 8);
+    while (slots.length < slotLimit) slots.push('<div class="inventory-empty-slot" aria-hidden="true"></div>');
+    return slots.join('');
+  }
+  function renderInventoryPanels(force) {
+    inventoryRenderT -= force ? 999 : 1 / 60;
+    if (!force && inventoryRenderT > 0) return;
+    inventoryRenderT = 0.2;
+    if (playerInventoryEl && playerInventoryEl.style.display !== 'none') {
+      const types = playerInventoryTypes();
+      playerInventoryEl.querySelector('.inventory-summary').textContent =
+        `저장 ${playerInventoryCount().toLocaleString()} · 무제한`;
+      const sig = `${S.colonyTier}|` + types.map(t => `${t}:${playerStackCount(t)}`).join('|');
+      if (force || sig !== playerInventorySig) {
+        playerInventorySig = sig;
+        playerInventoryEl.querySelector('.inventory-items').innerHTML = inventoryItemsHtml(types, playerStackCount, 'player', playerInventoryCapacity());
+      }
+    }
+    if (warehouseInventoryEl && warehouseInventoryEl.style.display !== 'none') {
+      if (!inventoryWarehouse || !S.buildings.includes(inventoryWarehouse)) {
+        warehouseInventoryEl.style.display = 'none'; inventoryWarehouse = null; return;
+      }
+      const inv = inventoryOf(inventoryWarehouse);
+      const count = inventoryCount(inv), cap = warehouseCapacity(inventoryWarehouse);
+      warehouseInventoryEl.querySelector('.inventory-head b').textContent = G.DEVICES[inventoryWarehouse.type].name;
+      warehouseInventoryEl.querySelector('.inventory-summary').textContent = `저장 ${count.toLocaleString()} / ${cap.toLocaleString()}`;
+      const types = Object.keys(inv).filter(t => inv[t] && inv[t].length);
+      const sig = `${inventoryWarehouse.id}|${cap}|` + types.map(t => `${t}:${inv[t].length}`).join('|');
+      if (force || sig !== warehouseInventorySig) {
+        warehouseInventorySig = sig;
+        warehouseInventoryEl.querySelector('.inventory-items').innerHTML = inventoryItemsHtml(types, t => inv[t].length, 'warehouse', cap);
+      }
+      const up = warehouseInventoryEl.querySelector('.inventory-upgrade');
+      up.style.display = inventoryWarehouse.type === 'warehouse' ? '' : 'none';
+      up.textContent = `용량 +500 · ₩${warehouseUpgradeCost(inventoryWarehouse).toLocaleString()}`;
+    }
+  }
+  function openPlayerInventory() {
+    playerInventoryEl.style.display = playerInventoryEl.style.display === 'none' ? 'flex' : 'none';
+    renderInventoryPanels(true);
+  }
+  function openWarehouseInventory(b) {
+    if (!isLocalWarehouse(b)) return;
+    inventoryWarehouse = b;
+    warehouseInventoryEl.style.display = 'flex';
+    playerInventoryEl.style.display = 'flex';
+    renderInventoryPanels(true);
+  }
+  function upgradeLocalWarehouse(b) {
+    const cost = warehouseUpgradeCost(b);
+    if (S.money < cost) { G.UI.flash && G.UI.flash(`돈 부족! ₩${cost.toLocaleString()} 필요`); return; }
+    S.money -= cost;
+    b.storageLevel = (b.storageLevel || 0) + 1;
+    G.Assets.playSfx('upgrade');
+    G.UI.flash && G.UI.flash(`창고 용량 ${warehouseCapacity(b).toLocaleString()}으로 증가`);
+    renderInventoryPanels(true);
   }
   function buildPenPanel() {
     const pp = document.createElement('div');
@@ -1259,6 +1508,28 @@ G.Factory = (function () {
     list.splice(0, n);
     return true;
   }
+  function isLocalWarehouse(b) {
+    return S.difficulty === 'dokura' && b && (b.type === 'warehouse' || b.type === 'largewarehouse');
+  }
+  function inventoryOf(b) {
+    if (!isLocalWarehouse(b)) return S.warehouse;
+    if (!b.inventory || typeof b.inventory !== 'object') b.inventory = {};
+    return b.inventory;
+  }
+  function inventoryCount(inv) {
+    return Object.keys(inv || {}).reduce((n, type) => n + ((inv[type] && inv[type].length) || 0), 0);
+  }
+  function warehouseCapacity(b) {
+    if (!isLocalWarehouse(b)) return Infinity;
+    if (b.type === 'warehouse') return 1000 + 500 * Math.max(0, b.storageLevel || 0);
+    return (G.DEVICES[b.type] && G.DEVICES[b.type].storage) || 10000;
+  }
+  function warehouseUpgradeCost(b) { return 500 * Math.pow(2, Math.max(0, b && b.storageLevel || 0)); }
+  function inventoryRoomFor(b) {
+    return isLocalWarehouse(b)
+      ? Math.max(0, warehouseCapacity(b) - inventoryCount(inventoryOf(b)))
+      : playerInventoryRoom();
+  }
   function isUnlocked(type) {
     const def = G.DEVICES[type];
     if (def && def.monument) return !!(S.monumentsUnlocked && S.monumentsUnlocked[type]);
@@ -1434,7 +1705,10 @@ G.Factory = (function () {
     if (isConstructing(b)) return `<div class="di-state">건설 중 · ${Math.ceil(b.constructionLeft)}초 남음</div>`;
     if (powerBlocked(b)) return `<div class="di-state">${b.powerConnected ? '전력 부족' : '전력 연결 안됨'}</div>`;
     if (b.type === 'penbox') return `<div class="di-state">이름: ${b.name || '우리'} · 수용 ${b.creatures ? b.creatures.length : 0}마리</div>`;
-    if (b.type === 'warehouse') return '<div class="di-state">창고 재고는 거래창에서 판매합니다.</div>';
+    if (b.type === 'warehouse') {
+      if (isLocalWarehouse(b)) return `<div class="di-state">독립 재고 ${inventoryCount(inventoryOf(b)).toLocaleString()}/${warehouseCapacity(b).toLocaleString()}</div>`;
+      return '<div class="di-state">공유 재고는 거래창에서 판매합니다.</div>';
+    }
     if (b.type === 'largewarehouse') {
       const out = b.filter && b.filter[0];
       const side = ['위', '오른쪽', '아래', '왼쪽'][b.dir == null ? 1 : b.dir];
@@ -2385,11 +2659,11 @@ G.Factory = (function () {
     ]);
     if (b.type === 'warehouse' || b.type === 'largewarehouse') return infoRows([
       ['기능', b.type === 'largewarehouse' ? '대량 비축·한 면 4칸 출력' : '화물 저장'],
-      ['비축 용량', (def.storage || 0).toLocaleString()],
-      ['재고 종류', Object.keys(S.warehouse).filter(k => S.warehouse[k] && S.warehouse[k].length).length + '종'],
+      ['비축 용량', (isLocalWarehouse(b) ? warehouseCapacity(b) : (def.storage || 0)).toLocaleString()],
+      ['재고 종류', Object.keys(inventoryOf(b)).filter(k => inventoryOf(b)[k] && inventoryOf(b)[k].length).length + '종'],
       b.type === 'largewarehouse' ? ['출력 품목', b.filter && b.filter[0] ? (FILTER_LABEL[b.filter[0]] || b.filter[0]) : '미선택'] : null,
-      ['판매', '거래창'],
-    ]) + warehouseInventoryHtml();
+      ['재고 방식', isLocalWarehouse(b) ? '창고별 독립' : '전역 공유'],
+    ]) + (isLocalWarehouse(b) ? '' : warehouseInventoryHtml());
     if (b.type === 'driller') return infoRows([
       ['범위', '17×17'],
       ['상태', b.state === 'full' ? '적재 한도 도달' : (b.state === 'producing' ? '채취 중' : (b.state === 'moving' ? '헤드 이동 중' : '대기'))],
@@ -3412,6 +3686,7 @@ G.Factory = (function () {
       filter: Array.isArray(b.filter) ? b.filter.slice() : undefined,
       statFilter: b.statFilter ? Object.assign({}, b.statFilter) : undefined,
       filterLane: b.filterLane,
+      priority: isGrabberType(b.type) ? grabberPriority(b) : undefined,
       gateA: b.gateA ? { c: b.gateA.c - minC, r: b.gateA.r - minR } : undefined,
       gateB: b.gateB ? { c: b.gateB.c - minC, r: b.gateB.r - minR } : undefined,
     }));
@@ -3622,7 +3897,13 @@ G.Factory = (function () {
       b.outBuffer = []; b.drillTargetId = null; b.drillPriorityId = null; b.drillCd = 0;
       b.drillHeadX = ctr.gx; b.drillHeadY = ctr.gy; b.state = 'idle';
     }
-    else if (type === 'largewarehouse') { b.filter = []; b.outputCd = 0; }
+    else if (type === 'largewarehouse') {
+      b.filter = []; b.outputCd = 0;
+      if (S.difficulty === 'dokura') { b.inventory = {}; b.storageLevel = 0; }
+    }
+    else if (type === 'warehouse') {
+      if (S.difficulty === 'dokura') { b.inventory = {}; b.storageLevel = 0; }
+    }
     else if (type === 'techica') { b.worker = null; }
     else if (type === 'wrongchaosmargot') { b.mood = 1; b.moodT = 60; b.gachaRemaining = 0; b.gachaFeed = null; }
     else if (type === 'terrarium') { b.dnaStats = null; b.dnaSourceType = null; b.incubatorCreatures = []; b.incubatorUnchi = 0; b.incubatorBirthT = 0; b.feedType = '실장푸드'; }
@@ -3774,6 +4055,16 @@ G.Factory = (function () {
       }
       b.missileAmmo = 0;
     }
+    if (b.inventory && typeof b.inventory === 'object') {
+      let i = 0;
+      for (const type of Object.keys(b.inventory)) {
+        for (const data of (b.inventory[type] || [])) {
+          S.cargo.push(makeCargo(data, Math.floor(ctr.gx) + (i % 3) - 1, Math.floor(ctr.gy) + Math.floor(i / 3)));
+          i++;
+        }
+      }
+      b.inventory = {};
+    }
     // 집게: 들고 있던 것만 처리(겹친 칸의 화물은 건드리지 않음)
     if (isGrabberType(b.type)) { release(b.holding); detach(b); return; }
     release(b.worker); release(b.item); release(b.holding); release(b.teacher); release(b.fuel);
@@ -3823,9 +4114,12 @@ G.Factory = (function () {
       if (d < bd) { bd = d; best = cg; }
     }
     if (!best || bd > 0.9) { if (G.UI.flash) G.UI.flash('근처에 창고로 보낼 화물 없음'); return; }
+    if (!warehouseIntake(best.data, null)) {
+      if (G.UI.flash) G.UI.flash('콜로니센터 인벤토리가 가득 찼습니다.');
+      return;
+    }
     best._dead = true;
     S.cargo = S.cargo.filter(cg => cg !== best);
-    warehouseIntake(best.data, null);
     G.Assets.playSfx('click');
     if (G.UI.flash) G.UI.flash(best.data.type + ' 창고 입고');
   }
@@ -3972,6 +4266,8 @@ G.Factory = (function () {
     if (b) selectedPenCreature = null;
     if (b && clientX != null && clientY != null) {
       if (b.type === 'wrongchaosmargot' && b.gachaRemaining > 0) clickWrongChaosGacha(b);
+      if (b.type === 'warehouse' || b.type === 'largewarehouse') openWarehouseInventory(b);
+      else if (b.type === 'colony') { playerInventoryEl.style.display = 'flex'; renderInventoryPanels(true); }
       updateFilterPanel();
       showDeviceInfoForBuilding(b, clientX, clientY);
     } else closeAuxPanels();
@@ -4068,7 +4364,11 @@ G.Factory = (function () {
         if (accepts(def, data.type) && (dev.inmates ? dev.inmates.length : 0) < def.hold) { if (!dev.inmates) dev.inmates = []; dev.inmates.push(data); return true; }
         return false;
       case 'grinder':
-        if (accepts(def, data.type) && !dev.item && outRoom(dev) > 0) { dev.item = data; dev.timer = 0; dev.state = 'producing'; return true; }
+        if (accepts(def, data.type) && !dev.item && outRoom(dev) > 0) {
+          dev.item = data; dev.timer = 0; dev.state = 'producing';
+          processorIntakeSpeech(dev, data);
+          return true;
+        }
         return false;
       case 'reformer':
         if (data.type === '독라' && !data.labor && !dev.item && S.wanderers.filter(w => w.data && w.data.labor).length < laborLimit()) { dev.item = data; dev.timer = 0; dev.state = 'producing'; return true; }
@@ -4189,7 +4489,7 @@ G.Factory = (function () {
         return false;
       case 'warehouse': case 'largewarehouse': case 'colony':
         if (G.CREATURES[data.type]) return false; // 생물은 창고에 안 들어감
-        warehouseIntake(data, dev); return true;
+        return warehouseIntake(data, dev);
       default: return false;
     }
   }
@@ -4316,6 +4616,7 @@ G.Factory = (function () {
     const a = achievementStats();
     if (!S.monumentsUnlocked) S.monumentsUnlocked = {};
     if (!S.monumentsNotified) S.monumentsNotified = {};
+    if (S.monumentIntroShown == null) S.monumentIntroShown = Object.keys(S.monumentsNotified).length > 0;
     for (const [type, done] of MONUMENT_ACHIEVEMENTS) {
       if (S.monumentsUnlocked[type] || !done(a)) continue;
       S.monumentsUnlocked[type] = true;
@@ -4323,12 +4624,20 @@ G.Factory = (function () {
       G.UI.flash && G.UI.flash('업적 달성: ' + G.DEVICES[type].name + ' 기념물 개방!');
       if (!S.monumentsNotified[type] && G.UI && G.UI.midoriRadio) {
         S.monumentsNotified[type] = true;
-        G.UI.midoriRadio([
-          '축하해, 공장장! 우리가 업적을 세워서 44방공호에서 기념물을 보내줬어.',
-          '공짜로 해당 그리드 전체에 추가 버프를 주는 거니까 꼭 설치하라구.',
-          '단, 그리드 당 하나밖에 설치못하고, 한번 지으면 옮기는 건 할 수 있지만 철거는 못해.',
-          '그러니까 해당 그리드에 특화된 기념물을 짓는게 좋겠지?',
-        ], { emotion: 'laugh' });
+        if (!S.monumentIntroShown) {
+          S.monumentIntroShown = true;
+          G.UI.midoriRadio([
+            '축하해, 공장장! 우리가 업적을 세워서 44방공호에서 기념물을 보내줬어.',
+            '공짜로 해당 그리드 전체에 추가 버프를 주는 거니까 꼭 설치하라구.',
+            '단, 그리드 당 하나밖에 설치못하고, 한번 지으면 옮기는 건 할 수 있지만 철거는 못해.',
+            '그러니까 해당 그리드에 특화된 기념물을 짓는게 좋겠지?',
+          ], { emotion: 'laugh' });
+        } else {
+          G.UI.midoriRadio([
+            '또 하나의 기념물을 획득했어, 공장장!',
+            '이대로 계속 가자구~!',
+          ], { emotion: 'laugh' });
+        }
       }
       break;
     }
@@ -4370,15 +4679,17 @@ G.Factory = (function () {
     return resourceCargoData('운치');
   }
   // 창고에서 "화물만" 추출 (생물 제외). 생산품 재고 + 자원(운치/실장푸드)
-  function extractFromWarehouse(b) {
-    const f = b.filter || [];
-    for (const type of Object.keys(S.warehouse)) {
+  function extractFromWarehouse(grabber, source) {
+    const inv = inventoryOf(source);
+    const f = grabber.filter || [];
+    for (const type of Object.keys(inv)) {
       if (CREATURE_TYPES.includes(type)) continue;       // 생물은 못 꺼냄
-      const list = S.warehouse[type]; if (!list || !list.length) continue;
+      const list = inv[type]; if (!list || !list.length) continue;
       if (f.length && !f.includes(type)) continue;
-      const idx = list.findIndex(d => matchItem(b, d, list));
+      const idx = list.findIndex(d => matchItem(grabber, d, list));
       if (idx >= 0) return list.splice(idx, 1)[0];
     }
+    if (isLocalWarehouse(source)) return null;
     if ((!f.length || f.includes('운치')) && S.unchi >= (C.UNCHI_BUNDLE || 10)) { S.unchi -= (C.UNCHI_BUNDLE || 10); return resourceCargoData('운치'); }
     if ((!f.length || f.includes('실장푸드')) && S.food >= 50) { S.food -= 50; return resourceCargoData('실장푸드'); }
     if ((!f.length || f.includes('짓소산 푸드')) && S.jissoFood >= 50) { S.jissoFood -= 50; return resourceCargoData('짓소산 푸드'); }
@@ -4391,14 +4702,32 @@ G.Factory = (function () {
       data._achievementChaosCounted = true;
       achievementStats().chaosMaggots++;
     }
-    if (data.type === '실장푸드') { S.food += data.amount || 1; return; }
-    if (data.type === '짓소산 푸드') { S.jissoFood = (S.jissoFood || 0) + (data.amount || 1); return; }
-    if (data.type === '우마이푸드') { S.umaiFood = (S.umaiFood || 0) + (data.amount || 1); return; }
-    if (data.type === '다이어트푸드') { S.dietFood = (S.dietFood || 0) + (data.amount || 1); return; }
-    if (data.type === '운치') { storeUnchi(data.amount || 1); return; }
-    if (S.autoSell[data.type]) { sellCargo(data, source); return; }   // 자동판매: 입고 즉시 판매
+    if (isLocalWarehouse(source)) {
+      const inv = inventoryOf(source);
+      const units = Math.max(1, Math.floor(data.amount || 1));
+      if (inventoryCount(inv) + units > warehouseCapacity(source)) return false;
+      if (!inv[data.type]) inv[data.type] = [];
+      for (let i = 0; i < units; i++) inv[data.type].push(Object.assign({}, data, {
+        id: i === 0 ? data.id : G.uid(), amount: 1,
+        stats: data.stats ? Object.assign({}, data.stats) : { 크기: 0 },
+      }));
+      return true;
+    }
+    if (S.autoSell[data.type] && !['실장푸드', '짓소산 푸드', '우마이푸드', '다이어트푸드', '운치', '조미료'].includes(data.type)) {
+      sellCargo(data, source);
+      return true;
+    }
+    const playerUnits = Math.max(1, Math.floor(data.amount || 1));
+    if (playerInventoryRoom() < playerUnits) return false;
+    if (data.type === '실장푸드') { S.food += data.amount || 1; return true; }
+    if (data.type === '짓소산 푸드') { S.jissoFood = (S.jissoFood || 0) + (data.amount || 1); return true; }
+    if (data.type === '우마이푸드') { S.umaiFood = (S.umaiFood || 0) + (data.amount || 1); return true; }
+    if (data.type === '다이어트푸드') { S.dietFood = (S.dietFood || 0) + (data.amount || 1); return true; }
+    if (data.type === '운치') { storeUnchi(data.amount || 1); return true; }
+    if (data.type === '조미료') { S.seasoning = (S.seasoning || 0) + (data.amount || 1); return true; }
     if (!S.warehouse[data.type]) S.warehouse[data.type] = [];
     S.warehouse[data.type].push(data);
+    return true;
   }
   /* ---- 시장 포화: 같은 제품을 많이 팔면 단가가 떨어지고, 시간이 지나면 회복 ---- */
   function marketMult(type) {
@@ -4537,6 +4866,7 @@ G.Factory = (function () {
     if (data && data.type && G.UI && G.UI.markTutorialAction) G.UI.markTutorialAction('made:' + data.type);
     const cg = { id: G.uid(), data, gx: col + 0.5, gy: row + 0.5, dir: 1, axis: 'h', sorterDir: null, sorterCell: null };
     cargoIdxAdd(cg);   // 같은 프레임 내 수용량 판정에 즉시 반영
+    spatialAdd(cargoSpatial, cg, cg.gx, cg.gy);
     return cg;
   }
   function cellOf(cg) { return { c: Math.floor(cg.gx), r: Math.floor(cg.gy) }; }
@@ -4648,7 +4978,7 @@ G.Factory = (function () {
   }
 
   /* ---- 시뮬레이션 ----------------------------------------------------- */
-  function update(dt) { rebuildFrameCaches(); updateCameraKeys(dt); tickEconomy(dt); tickWeather(dt); tickInvasion(dt); updateRenewableRuins(dt); updateCargo(dt); updateDevices(dt); updateResearch(dt); updateColonyUpgrade(dt); updateEnding(dt); updateWanderers(dt); updateMortarShells(dt); updateExplosionEffects(dt); updateParticles(dt); updateFloatTexts(dt); updateCoinEffects(dt); updateStains(dt); updateBgmMode(dt); tickQuests(dt); achievementStats().powerUsed += Math.max(0, S.powerUsed || 0) * dt; tickMonumentAchievements(); }
+  function update(dt) { rebuildFrameCaches(); updateCameraKeys(dt); tickEconomy(dt); tickWeather(dt); tickInvasion(dt); updateRenewableRuins(dt); updateCargo(dt); rebuildCargoSpatial(); updateDevices(dt); updateResearch(dt); updateColonyUpgrade(dt); updateEnding(dt); updateWanderers(dt); updateMortarShells(dt); updateExplosionEffects(dt); updateParticles(dt); updateFloatTexts(dt); updateCoinEffects(dt); updateStains(dt); updateBgmMode(dt); tickQuests(dt); renderInventoryPanels(false); achievementStats().powerUsed += Math.max(0, S.powerUsed || 0) * dt; tickMonumentAchievements(); }
   function tickWeather(dt) {
     if (!S.weather) S.weather = { rollIn: C.WEATHER_ROLL_SEC || 60, rainLeft: 0 };
     const w = S.weather;
@@ -4852,13 +5182,18 @@ G.Factory = (function () {
     return { text: String(picked || '') };
   }
   // 요구 물자 1개당 판매가(기준 스탯). 보상 하한 계산용.
-  function questItemSellUnit(item) {
+  function questItemSellUnit(item, req) {
+    const questUnit = G.QUEST_ITEM_UNITS && G.QUEST_ITEM_UNITS[item];
+    if (questUnit != null) return Math.max(1, Math.round(questUnit));
+    if (req && req.unit > 0) return Math.max(1, Math.round(req.unit));
     const p = (G.Creatures && G.Creatures.priceOf) ? G.Creatures.priceOf(item, {}) : 0;
     return Math.max(1, Math.round(p || 0));
   }
   const QUEST_MIN_MONEY = 3000;   // 금전 보상 최소액
   // 44방공호 매입가: 가공 난이도를 반영한 고정 단가(스탯 무관, 개수로만)
   function vault44Unit(item, fallback) {
+    const questUnit = G.QUEST_ITEM_UNITS && G.QUEST_ITEM_UNITS[item];
+    if (questUnit != null) return Math.max(1, Math.round(questUnit));
     if (item === '실장육') return 250;
     if (item === '분쇄육') return 180;
     if (item === '통조림') return 460;
@@ -4867,10 +5202,11 @@ G.Factory = (function () {
   }
   function refreshUnacceptedQuestRewards() {
     for (const q of (S.quests || [])) {
-      if (!q || q.accepted || q.org !== 'vault44') continue;
-      const org = G.QUEST_ORGS.vault44;
+      if (!q || q.accepted) continue;
+      const org = G.QUEST_ORGS[q.org];
+      if (!org) continue;
       const req = org.reqs.find(r => r.item === q.item) || { item: q.item, unit: 8 };
-      const reward = computeReward(org, req, q.n, colonyTier(), 'vault44');
+      const reward = computeReward(org, req, q.n, colonyTier(), q.org);
       q.reward = reward;
       q.rewardText = reward.text;
     }
@@ -4888,7 +5224,7 @@ G.Factory = (function () {
       return { kind: 'money', money, text: '💰 ' + money.toLocaleString() };
     }
     // 그 외 단체: 돈(44방공호보다 적게, 최소 3000) + 물질 보상
-    const sellUnit = Math.max(1, questItemSellUnit(req.item));
+    const sellUnit = Math.max(1, questItemSellUnit(req.item, req));
     const money = Math.max(QUEST_MIN_MONEY, Math.round(n * sellUnit * 1.2 * tierMult));
     const rw = { kind: 'mixed', money };
     const parts = [];
@@ -5099,7 +5435,7 @@ G.Factory = (function () {
       autoBuyCd = 1.0;
       const batch = Math.max(1, Math.floor(ab.batch || 100));
       const cost = batch * (C.FOOD_PRICE || 1);
-      if (S.money >= cost) { S.money -= cost; S.food = (S.food || 0) + batch; }
+      if (S.money >= cost && playerInventoryRoom() >= batch) { S.money -= cost; S.food = (S.food || 0) + batch; }
     }
     // 시장 시세: 포화는 0으로 빠르게 회복, 그 후엔 천천히 희소 프리미엄(음수)으로 상승.
     // 창고에 쌓인(오래 안 판) 품목은 시장지수를 0으로 초기화해 프리미엄 누적 대상으로 삼는다.
@@ -5278,6 +5614,12 @@ G.Factory = (function () {
   function spawnIntruder(data, x, y, opts) {
     const a = Math.random() * Math.PI * 2;
     if (data) data.externalOrigin = !(opts && (opts.invade || opts.raider));
+    if (data && opts && opts.invade && S.difficulty === 'dokura' && !data._dokuraHpApplied) {
+      data._dokuraHpApplied = true;
+      data.hpScale = (data.hpScale || 1) * 2;
+      G.Creatures.ensureVitals(data);
+      data.hp = G.Creatures.hpMaxOf(data);
+    }
     if (!(opts && opts.allowOwnedSpawn) && isOwnedPoint(x, y)) {
       const p = edgeSpawnPoint();
       x = p.x; y = p.y;
@@ -5542,13 +5884,13 @@ G.Factory = (function () {
       }
     }
     // 1) 배회 중인 새끼(노동석/침입 제외)
-    for (const t of S.wanderers) {
+    for (const t of nearbyWanderers(w.gx, w.gy, bd)) {
       if (t === w || t._dead || t.invade || t.data.labor) continue;
       if (!BABY_TYPES.has(t.data.type)) continue;
       consider('wander', t, t.gx, t.gy);
     }
     // 2) 벨트 위 새끼/음식 화물
-    for (const cg of S.cargo) {
+    for (const cg of nearbyCargo(w.gx, w.gy, sight)) {
       if (cg._dead) continue;
       const isBaby = BABY_TYPES.has(cg.data.type), isFood = EDIBLE.has(cg.data.type);
       if (isFood && cg.data.raidMeat) continue;
@@ -5604,8 +5946,8 @@ G.Factory = (function () {
   }
   // 가장 가까운 음식 화물
   function nearestEdibleCargo(gx, gy, eater) {
-    let best = null, bd = Infinity;
-    for (const cg of S.cargo) {
+    let best = null, bd = C.LABOR_SIGHT || 60;
+    for (const cg of nearbyCargo(gx, gy, bd)) {
       if (!EDIBLE.has(cg.data.type)) continue;
       if (SPECIAL_TREATS.has(cg.data.type) && (Math.abs(cg.gx - gx) > 4.5 || Math.abs(cg.gy - gy) > 4.5)) continue;
       if ((eater && (eater.raider || eater.invade)) && cg.data.raidMeat) continue;
@@ -5616,7 +5958,7 @@ G.Factory = (function () {
   }
   function nearestSpecialTreatCargo(gx, gy, range) {
     let best = null, bd = range == null ? 4.5 : range;
-    for (const cg of S.cargo) {
+    for (const cg of nearbyCargo(gx, gy, bd)) {
       if (!SPECIAL_TREATS.has(cg.data.type)) continue;
       if (Math.abs(cg.gx - gx) > bd || Math.abs(cg.gy - gy) > bd) continue;
       const d = Math.hypot(cg.gx - gx, cg.gy - gy);
@@ -5658,12 +6000,14 @@ G.Factory = (function () {
   }
   // 근처 음식 화물 1개를 먹어치움 → "우마우마한~" (성장 상태별 어미)
   function tryEatNearby(w, range) {
-    for (let i = 0; i < S.cargo.length; i++) {
-      const cg = S.cargo[i];
+    for (const cg of nearbyCargo(w.gx, w.gy, range)) {
+      if (cg._dead) continue;
       if (!EDIBLE.has(cg.data.type)) continue;
       if ((w.raider || w.invade) && cg.data.raidMeat) continue;
       if (Math.hypot(cg.gx - w.gx, cg.gy - w.gy) > range) continue;
-      cg._dead = true; S.cargo.splice(i, 1);
+      cg._dead = true;
+      const i = S.cargo.indexOf(cg);
+      if (i >= 0) S.cargo.splice(i, 1);
       const killed = applySpecialTreatEffect(w.data, cg.data.type, w.gx, w.gy);
       if (killed) { w._dead = true; return true; }
       const line = (G.LINES.eat && (G.LINES.eat[w.data.type] || G.LINES.eat.성체실장)) || '우마우마한데스';
@@ -5711,6 +6055,8 @@ G.Factory = (function () {
     if (!floatTexts.length) return;
     ctx.save(); ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic'; ctx.lineWidth = 3;
     for (const f of floatTexts) {
+      const gx = f.x / CELL, gy = f.y / CELL;
+      if (gx < renderView.x0 - 1 || gx > renderView.x1 + 1 || gy < renderView.y0 - 1 || gy > renderView.y1 + 1) continue;
       ctx.globalAlpha = clamp(f.life / f.max, 0, 1);
       ctx.strokeStyle = 'rgba(0,0,0,0.8)'; ctx.strokeText(f.text, f.x, f.y);
       ctx.fillStyle = f.color; ctx.fillText(f.text, f.x, f.y);
@@ -5735,6 +6081,8 @@ G.Factory = (function () {
   }
   function drawParticles() {
     for (const p of S.particles) {
+      const gx = p.x / CELL, gy = p.y / CELL;
+      if (gx < renderView.x0 - 1 || gx > renderView.x1 + 1 || gy < renderView.y0 - 1 || gy > renderView.y1 + 1) continue;
       ctx.globalAlpha = Math.max(0, p.life / p.max); ctx.fillStyle = p.color;
       ctx.fillRect(p.x - 1.5, p.y - 1.5, 3, 3);
     }
@@ -5761,6 +6109,8 @@ G.Factory = (function () {
   }
   function drawStains() {
     for (const s of S.stains) {
+      const gx = s.x / CELL, gy = s.y / CELL;
+      if (gx < renderView.x0 - 1 || gx > renderView.x1 + 1 || gy < renderView.y0 - 1 || gy > renderView.y1 + 1) continue;
       ctx.globalAlpha = 0.5 * (s.life == null ? 1 : Math.max(0, s.life / (s.max || 30)));
       for (const d of s.dots) { ctx.fillStyle = d.color; ctx.beginPath(); ctx.arc(s.x + d.dx, s.y + d.dy, d.r, 0, Math.PI * 2); ctx.fill(); }
     }
@@ -5875,7 +6225,7 @@ G.Factory = (function () {
     if (w._pathGoal !== goalKey || (!w._path && w._pathRetry <= 0)) {
       w._path = laborPathfind(w, w.goal);
       w._pathGoal = goalKey;
-      w._pathRetry = 1.25 + Math.random() * 0.35;
+      w._pathRetry = 2.25 + Math.random() * 0.75;
     }
     while (w._path && w._path.length && Math.hypot(w._path[0].x - w.gx, w._path[0].y - w.gy) < 0.45) w._path.shift();
     return w._path && w._path.length ? w._path[0] : w.goal;
@@ -6036,35 +6386,20 @@ G.Factory = (function () {
   // 배회 개체 충돌 분리(서로 겹치지 않게 밀어냄)
   function collRad(type) { return 0.46 * ((C.DISPLAY_SCALE && C.DISPLAY_SCALE[type]) || 1); }
   function separateWanderers() {
-    const ws = S.wanderers; const n = ws.length;
-    if (n > 1) {
-      // 공간 해시: 같은/인접 셀의 개체끼리만 비교 (최대 분리거리 0.92 < 1칸)
-      const buckets = new Map();
-      for (let i = 0; i < n; i++) {
-        const k = Math.floor(ws[i].gx) + '|' + Math.floor(ws[i].gy);
-        const a = buckets.get(k);
-        if (a) a.push(i); else buckets.set(k, [i]);
-      }
-      for (let i = 0; i < n; i++) {
-        const a = ws[i];
-        const c = Math.floor(a.gx), r = Math.floor(a.gy);
-        for (let dc = -1; dc <= 1; dc++) for (let dr = -1; dr <= 1; dr++) {
-          const list = buckets.get((c + dc) + '|' + (r + dr));
-          if (!list) continue;
-          for (const j of list) {
-            if (j <= i) continue;
-            const b = ws[j];
-            // 노동석끼리는 서로 충돌(분리) 없음. 단, 침입 등 다른 실장석과는 충돌 유지.
-            if (a.data.labor && b.data.labor) continue;
-            if (a.endingRaid && b.endingRaid) continue;
-            const dx = b.gx - a.gx, dy = b.gy - a.gy; const d = Math.hypot(dx, dy);
-            const min = collRad(a.data.type) + collRad(b.data.type);
-            if (d > 0.0001 && d < min) {
-              const push = (min - d) / 2, ux = dx / d, uy = dy / d;
-              a.gx -= ux * push; a.gy -= uy * push; b.gx += ux * push; b.gy += uy * push;
-            }
-          }
-        }
+    const ws = S.wanderers;
+    // 개체끼리의 물리 충돌은 침입 실장석 ↔ 노동석 조합에만 적용한다.
+    // 일반 실장석끼리 겹치는 것은 허용해 대규모 공장의 충돌 비용을 제거한다.
+    rebuildWanderSpatial();
+    for (const labor of ws) {
+      if (labor._dead || !labor.data || !labor.data.labor) continue;
+      for (const invader of nearbyWanderers(labor.gx, labor.gy, 1.2)) {
+        if (invader._dead || !invader.invade) continue;
+        const dx = invader.gx - labor.gx, dy = invader.gy - labor.gy, d = Math.hypot(dx, dy);
+        const min = collRad(labor.data.type) + collRad(invader.data.type);
+        if (d <= 0.0001 || d >= min) continue;
+        const push = (min - d) / 2, ux = dx / d, uy = dy / d;
+        labor.gx -= ux * push; labor.gy -= uy * push;
+        invader.gx += ux * push; invader.gy += uy * push;
       }
     }
     // 특수 장치 충돌: 배회 개체를 분배기/꼬챙이/테치카 몸체 밖으로 밀어냄(노동석/일반 모두)
@@ -6229,6 +6564,13 @@ G.Factory = (function () {
     const def = G.DEVICES[b.type];
     return def ? (def.powerUse || 0) : 0;
   }
+  function grabberPriority(b) {
+    const n = Number(b && b.priority);
+    return Number.isFinite(n) ? clamp(Math.round(n), 1, 5) : 3;
+  }
+  function grabberPriorityDelay(b) {
+    return (grabberPriority(b) - 1) * 0.02;
+  }
   function needsRequiredPower(b) {
     if (!b) return false;
     if (b.type === 'lab') return labPowerUse(b) > 0;
@@ -6252,13 +6594,13 @@ G.Factory = (function () {
     if (b.type === 'techica') return !!b.worker;
     if (b.type === 'catcher') return b.phase !== 'idle' || !!b.target || !!b.holding;
     if (b.type === 'chaosgate') return true;
-    if (b.type === 'driller') return outBuffer(b).length < 100 && !!findDrillerTarget(b);
+    if (b.type === 'driller') return outBuffer(b).length < 100 && !!(S.ruins || []).find(r => r.id === b.drillTargetId && ruinInDrillerRange(b, r));
     if (b.type === 'largewarehouse') return largeWarehouseCanOutput(b);
     if (b.type === 'sniper' || b.type === 'mortar' || b.type === 'chaosturret') {
       const cx = b.col + b.w / 2, cy = b.row + b.h / 2, range = turretRange(b);
       if (b.type === 'mortar' && b.manualTarget
         && Math.hypot(b.manualTarget.gx - cx, b.manualTarget.gy - cy) <= range) return true;
-      return S.wanderers.some(w => !w._dead && turretTargets(b, w) && Math.hypot(w.gx - cx, w.gy - cy) <= range);
+      return nearbyWanderers(cx, cy, range).some(w => !w._dead && turretTargets(b, w) && Math.hypot(w.gx - cx, w.gy - cy) <= range);
     }
     if (b.type === 'packer') return outRoom(b) > 0 && !!((b.seafood && b.seafood.length || b.minced && b.minced.length || b.meat && b.meat.length) && (b.scrapN || 0) >= 1);
     if (b.type === 'salecenter') return (b.packT || 0) > 0;
@@ -6463,6 +6805,8 @@ G.Factory = (function () {
   }
 
   let powerGridUpdateT = 0;
+  let frameGrabbersByPriority = [];
+  let frameGrabberSourcePens = new Map();
   function updateDevices(dt) {
     updateConstruction(dt);
     for (const b of S.buildings) if (POWER_PLANTS.has(b.type) && !isConstructing(b)) updatePowerPlant(b, dt);
@@ -6474,8 +6818,19 @@ G.Factory = (function () {
     // 집게/긴팔집게는 우선순위(priority 1~5, 작을수록 먼저) 순서로 먼저 처리한다.
     // 같은 출처(창고/장치/바닥)에 여러 집게의 요청이 동시에 몰릴 때, 우선순위가
     // 1에 가까운 집게가 먼저 집도록 보장하기 위함.
-    const grabbersByPriority = S.buildings.filter(b => isGrabberType(b.type))
-      .sort((a, b) => (a.priority || 3) - (b.priority || 3));
+    const grabbersByPriority = S.buildings.filter(b => isGrabberType(b.type));
+    for (const b of grabbersByPriority) b.priority = grabberPriority(b);   // 구버전/비정상 저장값도 1~5로 보정
+    grabbersByPriority.sort((a, b) => a.priority - b.priority || String(a.id).localeCompare(String(b.id)));
+    frameGrabbersByPriority = grabbersByPriority;
+    frameGrabberSourcePens = new Map();
+    for (const b of grabbersByPriority) {
+      const pk = grabberRoles(b).pickup;
+      const direct = deviceAt(pk.c, pk.r);
+      const pen = direct && direct.type === 'penbox'
+        ? direct
+        : frameCache.pens.find(p => penAbsCells(p).some(cell => cell.c === pk.c && cell.r === pk.r));
+      if (pen) frameGrabberSourcePens.set(b.id, pen);
+    }
     for (const b of grabbersByPriority) {
       if (isConstructing(b)) continue;
       if (b.speechT > 0) b.speechT -= dt;
@@ -6488,6 +6843,7 @@ G.Factory = (function () {
       if (b.speechT > 0) b.speechT -= dt;   // 장치 말풍선 시간 감소
       if (POWER_PLANTS.has(b.type) || POWER_POLES.has(b.type)) continue;
       if (powerBlocked(b)) { b.state = b.powerConnected ? 'nopower' : 'unpowered'; continue; }
+      if (deviceCanSleep(b)) continue;
       if (b.type === 'birthing') updateBirthing(b, dt);
       else if (b.type === 'reformer') updateReformer(b, dt);
       else if (b.type === 'washbasin') updateWashbasin(b, dt);
@@ -6503,6 +6859,25 @@ G.Factory = (function () {
       else if (b.type === 'correction') updateCorrection(b, dt);
       else if (['slaughter', 'deshell', 'grinder'].includes(b.type)) updateProcessor(b, dt);
     }
+    frameGrabbersByPriority = [];
+    frameGrabberSourcePens = new Map();
+  }
+  function deviceCanSleep(b) {
+    if (b.type === 'birthing') return !b.worker && !b.output;
+    if (b.type === 'reformer') return !b.item;
+    if (b.type === 'washbasin') return !b.item && !b.output;
+    if (b.type === 'sorter') return !(b.buffer && b.buffer.length);
+    if (b.type === 'tunnel' || b.type === 'crossbelt') return !(b.queue && b.queue.length);
+    if (b.type === 'mixer') return !b.slotMeat && !b.slotAcid && !b.slotSeasoning && !b.slotScrap
+      && !(b.unchiN || b.foodN || b.cA || b.cB) && !b.outputFood && !outBuffer(b).length;
+    if (b.type === 'cookery') return !b.cooking && !Object.values(b.mats || {}).some(Boolean) && !outBuffer(b).length;
+    if (b.type === 'packer') return !(b.minced && b.minced.length) && !(b.meat && b.meat.length)
+      && !(b.seafood && b.seafood.length) && !(b.scrapN || 0) && !b.outputCargo && !outBuffer(b).length;
+    if (b.type === 'acidgen') return !b.item && !outBuffer(b).length;
+    if (b.type === 'correction') return !(b.inmates && b.inmates.length);
+    if (b.type === 'slaughter' || b.type === 'deshell') return !b.item && !outBuffer(b).length;
+    if (b.type === 'grinder') return !b.item && (b.weight || 0) < C.GRIND_TARGET && !outBuffer(b).length;
+    return false;
   }
   function updateConstruction(dt) {
     for (const b of S.buildings) {
@@ -6628,16 +7003,21 @@ G.Factory = (function () {
     const child = ['자실장', '새끼사육실장', '새끼독라'].includes(data.type);
     const ageKey = child ? 'child' : 'adult';
     let group = null;
+    let lineKey = ageKey;
     if (b.type === 'deshell') {
       group = (data.type === '사육실장' || data.type === '새끼사육실장') ? G.LINES.deshellPet : G.LINES.deshellNormal;
     } else if (b.type === 'slaughter' && (data.type === '독라' || data.type === '새끼독라')) {
       group = G.LINES.slaughterSlave;
+    } else if (b.type === 'grinder' && G.CREATURES[data.type]) {
+      group = G.LINES.grinder;
+      if (data.type === '구더기') lineKey = 'maggot';
+      else if (data.type === '엄지') lineKey = 'thumb';
     }
-    const lines = group && group[ageKey];
+    const lines = group && group[lineKey];
     if (!lines || !lines.length) return;
     b.speech = lines[Math.floor(Math.random() * lines.length)];
     b.speechT = 2.5;
-    b.speechTone = child ? '테치테치' : '데스데스';
+    b.speechTone = lineKey === 'maggot' ? '레후' : (lineKey === 'thumb' ? '레치레치' : (child ? '테치테치' : '데스데스'));
   }
   function techicaLine(data) {
     const s = growthSuffix(data && data.type);
@@ -6682,7 +7062,9 @@ G.Factory = (function () {
       }
       if ((c.speechT || 0) <= 0 && Math.random() < (C.TECHICA_TALK_CHANCE || 0.12) * dt) { c.speech = techicaLine(c); c.speechT = 1.8; }
     }
-    for (const w of S.wanderers) {
+    const wrx = (r.x0 + r.x1) / 2, wry = (r.y0 + r.y1) / 2;
+    const wrr = Math.max(r.x1 - r.x0, r.y1 - r.y0) / 2 + 1;
+    for (const w of nearbyWanderers(wrx, wry, wrr)) {
       if (!inRect(r, w.gx, w.gy)) continue;
       if (w.data && w.data.stats) {
         if (Math.random() < (C.TECHICA_HAPPY_RATE || 0.5) * em * dt) G.Creatures.changeHappy(w.data, 1);
@@ -6751,7 +7133,7 @@ G.Factory = (function () {
     const cx = b.col + b.w / 2, cy = b.row + b.h / 2, rg = turretRange(b);
     // 매 프레임 사거리 안 가장 가까운 대상 탐색
     let best = null, bd = Infinity;
-    for (const w of S.wanderers) {
+    for (const w of nearbyWanderers(cx, cy, rg)) {
       if (!turretTargets(b, w)) continue;
       const d = Math.hypot(w.gx - cx, w.gy - cy);
       if (d <= rg && d < bd) { bd = d; best = w; }
@@ -6801,7 +7183,7 @@ G.Factory = (function () {
         const ox = cur.gx, oy = cur.gy;
         cur = null;
         let nd = C.CHAOS_TURRET_CHAIN_RANGE || 5;
-        for (const candidate of S.wanderers) {
+        for (const candidate of nearbyWanderers(ox, oy, C.CHAOS_TURRET_CHAIN_RANGE || 5)) {
           if (hit.includes(candidate) || !turretTargets(b, candidate)) continue;
           const d = Math.hypot(candidate.gx - ox, candidate.gy - oy);
           if (d <= nd) { nd = d; cur = candidate; }
@@ -6858,7 +7240,7 @@ G.Factory = (function () {
     for (let i = 0; i < 24; i++) spawnParticle(gx * CELL, gy * CELL, i % 2 ? '#ff7b3a' : '#ffd24a');
     spawnExplosionEffect(gx, gy, effectScale);
     playWorldSfx('explosion', gx, gy, { force: true, volume: 0.8 });
-    const victims = S.wanderers.slice();
+    const victims = nearbyWanderers(gx, gy, radius).slice();
     for (const w of victims) {
       if (w._dead || (w.data && w.data.labor)) continue;
       const d = Math.hypot(w.gx - gx, w.gy - gy);
@@ -6919,7 +7301,7 @@ G.Factory = (function () {
     }
     if (!b.armed) b.armed = true;
     // 근처에 침입자가 들어오면 점화 + 폭발 직전 대사
-    const near = S.wanderers.find(w => !w._dead && !w.endingCinematic && (w.invade || w.raider) && Math.hypot(w.gx - cx, w.gy - cy) <= 0.9);
+    const near = nearbyWanderers(cx, cy, 1).find(w => !w._dead && !w.endingCinematic && (w.invade || w.raider) && Math.hypot(w.gx - cx, w.gy - cy) <= 0.9);
     if (near) {
       b.armed = false; b.fuseT = 0.45;
       speakFrom(b, G.LINES && G.LINES.minePreExplode, 1.4);
@@ -7027,7 +7409,7 @@ G.Factory = (function () {
   function nearestFloorCargo(w) {
     const d = w.data;
     let best = null, bd = C.LABOR_SIGHT || 60;
-    for (const cg of S.cargo) {
+    for (const cg of nearbyCargo(w.gx, w.gy, bd)) {
       if (cg._dead || claimedByOther(cg, d)) continue;
       const c = Math.floor(cg.gx), r = Math.floor(cg.gy);
       if (hasBelt(c, r) || !isOwnedCell(c, r)) continue;
@@ -7041,7 +7423,7 @@ G.Factory = (function () {
   function nearestLooseCreature(w) {
     const d = w.data;
     let best = null, bd = C.LABOR_SIGHT || 60;
-    for (const t of S.wanderers) {
+    for (const t of nearbyWanderers(w.gx, w.gy, bd)) {
       if (t === w || t._dead || t.raider || t.leaving || t.data.labor || claimedByOther(t, d)) continue;
       if (!G.CREATURES[t.data.type]) continue;
       if (!isOwnedCell(Math.floor(t.gx), Math.floor(t.gy))) continue;
@@ -7105,8 +7487,11 @@ G.Factory = (function () {
         if (!best) { dropLaborCarry(w); return; }   // 창고 없음 → 내려놓음
         w.goal = { x: best.col + best.w / 2, y: best.row + best.h / 2 };
         if (bd < best.w / 2 + 1.0) {
-          laborCargoItems(d.carry).forEach(it => warehouseIntake(it, best));
-          d.carry = null; w.goal = null; playWorldSfx('click', w.gx, w.gy);
+          const items = laborCargoItems(d.carry);
+          const units = items.reduce((sum, it) => sum + Math.max(1, Math.floor(it.amount || 1)), 0);
+          if (inventoryRoomFor(best) >= units && items.every(it => warehouseIntake(it, best))) {
+            d.carry = null; w.goal = null; playWorldSfx('click', w.gx, w.gy);
+          }
         }
       } else {
         const pen = laborTargetPen(w);
@@ -7158,8 +7543,8 @@ G.Factory = (function () {
   // 방어 모드: 약탈자를 추격해 공격 (구역 밖으론 못 나감 — 경계에서 요격)
   function laborDefend(w, dt, consumed) {
     let tgt = null, bd = C.LABOR_SIGHT || 60;
-    for (const t of S.wanderers) {
-      if (!t.raider) continue;
+    for (const t of nearbyWanderers(w.gx, w.gy, bd)) {
+      if (t._dead || !t.raider) continue;
       const dist = Math.hypot(t.gx - w.gx, t.gy - w.gy);
       if (dist < bd) { bd = dist; tgt = t; }
     }
@@ -7278,8 +7663,12 @@ G.Factory = (function () {
     }
     let tgt = (S.ruins || []).find(r => r.id === b.drillTargetId);
     if (!tgt || !ruinInDrillerRange(b, tgt) || (b.drillPriorityId && tgt.id !== b.drillPriorityId)) {
-      tgt = findDrillerTarget(b);
-      b.drillTargetId = tgt ? tgt.id : null;
+      b.drillSearchT = Math.max(0, (b.drillSearchT || 0) - dt);
+      if (b.drillSearchT <= 0 || b.drillPriorityId) {
+        tgt = findDrillerTarget(b);
+        b.drillTargetId = tgt ? tgt.id : null;
+        b.drillSearchT = 0.5 + Math.random() * 0.25;
+      } else tgt = null;
     }
     const homeX = b.col + b.w / 2, homeY = b.row + b.h / 2;
     const tx = tgt ? tgt.col + tgt.w / 2 : homeX;
@@ -7313,7 +7702,8 @@ G.Factory = (function () {
   }
   function largeWarehouseCanOutput(b) {
     const type = b.filter && b.filter[0];
-    const data = type && S.warehouse[type] && S.warehouse[type][0];
+    const inv = inventoryOf(b);
+    const data = type && inv[type] && inv[type][0];
     if (!data) return false;
     for (const out of largeWarehouseOutputCells(b)) {
       if (!inGrid(out.c, out.r)) continue;
@@ -7325,22 +7715,23 @@ G.Factory = (function () {
   }
   function updateLargeWarehouse(b, dt) {
     const type = b.filter && b.filter[0];
-    if (!type || !S.warehouse[type] || !S.warehouse[type].length) return;
+    const inv = inventoryOf(b);
+    if (!type || !inv[type] || !inv[type].length) return;
     b.outputCd = (b.outputCd || 0) - dt;
     if (b.outputCd > 0) return;
     b.outputCd = 0.25;
     for (const out of largeWarehouseOutputCells(b)) {
       if (!inGrid(out.c, out.r)) continue;
-      const data = S.warehouse[type][0];
+      const data = inv[type][0];
       if (!data) break;
       const dev = deviceAt(out.c, out.r);
       if (dev) {
         if (!warehouseOutputDeviceReady(dev, data, out)) continue;
-        if (dropInto(dev, data, out)) S.warehouse[type].shift();
+        if (dropInto(dev, data, out)) inv[type].shift();
         continue;
       }
       if (!isBeltLike(out.c, out.r) || countCargoInCell(out.c, out.r) >= C.BELT_CAP) continue;
-      S.warehouse[type].shift();
+      inv[type].shift();
       const cg = makeCargo(data, out.c, out.r);
       cg.dir = out.dir;
       cg.axis = (out.dir === 1 || out.dir === 3) ? 'h' : 'v';
@@ -7354,9 +7745,12 @@ G.Factory = (function () {
     const tx = best.col + best.w / 2, ty = best.row + best.h / 2;
     w.goal = { x: tx, y: ty };
     if (Math.hypot(tx - w.gx, ty - w.gy) < Math.max(best.w, best.h) / 2 + 1.0) {
-      laborCargoItems(d.carry).forEach(it => warehouseIntake(it, best));
-      d.carry = null; w.goal = null; playWorldSfx('click', w.gx, w.gy);
-      return true;
+      const items = laborCargoItems(d.carry);
+      const units = items.reduce((sum, it) => sum + Math.max(1, Math.floor(it.amount || 1)), 0);
+      if (inventoryRoomFor(best) >= units && items.every(it => warehouseIntake(it, best))) {
+        d.carry = null; w.goal = null; playWorldSfx('click', w.gx, w.gy);
+        return true;
+      }
     }
     return false;
   }
@@ -7470,8 +7864,11 @@ G.Factory = (function () {
       if (!best) { dropLaborCarry(w); return; }
       w.goal = { x: best.col + best.w / 2, y: best.row + best.h / 2 };
       if (bd < best.w / 2 + 1.0) {
-        laborCargoItems(d.carry).forEach(it => warehouseIntake(it, best));
-        d.carry = null; w.goal = null; playWorldSfx('click', w.gx, w.gy);
+        const items = laborCargoItems(d.carry);
+        const units = items.reduce((sum, it) => sum + Math.max(1, Math.floor(it.amount || 1)), 0);
+        if (inventoryRoomFor(best) >= units && items.every(it => warehouseIntake(it, best))) {
+          d.carry = null; w.goal = null; playWorldSfx('click', w.gx, w.gy);
+        }
       }
       return;
     }
@@ -7525,8 +7922,10 @@ G.Factory = (function () {
   // 포획기: 집게팔이 대상에게 뻗어 한 번에 한 개씩 끌어옴(범위 업그레이드)
   function catcherTargets(b) {
     const r = effRangeRect(b);
+    const cx = (r.x0 + r.x1) / 2, cy = (r.y0 + r.y1) / 2;
+    const radius = Math.max(r.x1 - r.x0, r.y1 - r.y0) / 2 + 1;
     const out = outputCell(b);   // 막 내보낸 개체(출구 칸)는 다시 잡지 않음
-    return S.wanderers.filter(w => !w._dead && !w.data.labor && !w.invade && inRect(r, w.gx, w.gy) && isOwnedCell(Math.floor(w.gx), Math.floor(w.gy)) && !(Math.floor(w.gx) === out.c && Math.floor(w.gy) === out.r));
+    return nearbyWanderers(cx, cy, radius).filter(w => !w._dead && !w.data.labor && !w.invade && inRect(r, w.gx, w.gy) && isOwnedCell(Math.floor(w.gx), Math.floor(w.gy)) && !(Math.floor(w.gx) === out.c && Math.floor(w.gy) === out.r));
   }
   function updateCatcher(b, dt) {
     const cx = b.col + 0.5, cy = b.row + 0.5;
@@ -8131,10 +8530,85 @@ G.Factory = (function () {
     else S.cargo.push(makeCargo(b.holding, drop.c, drop.r));
     return true;
   }
+  function grabberPickupPool(b) {
+    const pk = grabberRoles(b).pickup;
+    const dev = deviceAt(pk.c, pk.r);
+    const sourcePen = frameGrabberSourcePens.get(b.id) || (dev && dev.type === 'penbox' ? dev : null);
+    if (sourcePen) {
+      const pool = (sourcePen.creatures || []).slice();
+      if ((b.filter || []).includes('운치') && (sourcePen.unchi || 0) >= (C.UNCHI_BUNDLE || 10)) {
+        pool.push({ type: '운치', amount: C.UNCHI_BUNDLE || 10, stats: { 크기: 0 } });
+      }
+      return pool;
+    }
+    if (dev && (dev.type === 'warehouse' || dev.type === 'largewarehouse' || dev.type === 'colony')) {
+      const inv = inventoryOf(dev), pool = [];
+      for (const type of Object.keys(inv)) {
+        if (CREATURE_TYPES.includes(type)) continue;
+        if (inv[type] && inv[type].length) pool.push(...inv[type]);
+      }
+      if (!isLocalWarehouse(dev)) {
+        if (S.unchi >= (C.UNCHI_BUNDLE || 10)) pool.push({ type: '운치', amount: C.UNCHI_BUNDLE || 10, stats: { 크기: 0 } });
+        if (S.food >= 50) pool.push({ type: '실장푸드', amount: 50, stats: { 크기: 0 } });
+        if (S.jissoFood >= 50) pool.push({ type: '짓소산 푸드', amount: 50, stats: { 크기: 0 } });
+      }
+      return pool;
+    }
+    if (dev) {
+      if (dev.type === 'terrarium') {
+        const pool = (dev.incubatorCreatures || []).slice();
+        if ((b.filter || []).includes('운치') && (dev.incubatorUnchi || 0) >= (C.UNCHI_BUNDLE || 10)) {
+          pool.push({ type: '운치', amount: C.UNCHI_BUNDLE || 10, stats: { 크기: 0 } });
+        }
+        return pool;
+      }
+      return (dev.outBuffer || []).slice();
+    }
+    const pool = (cargoIdx.get(pk.c + '|' + pk.r) || [])
+      .filter(cg => !cg._dead && Math.floor(cg.gx) === pk.c && Math.floor(cg.gy) === pk.r)
+      .map(cg => cg.data);
+    for (const w of nearbyWanderers(pk.c + 0.5, pk.r + 0.5, 1)) {
+      if (!w._dead && !w.data.labor && Math.floor(w.gx) === pk.c && Math.floor(w.gy) === pk.r) pool.push(w.data);
+    }
+    return pool;
+  }
+  function grabberCanRouteData(b, data) {
+    const drop = grabberRoles(b).drop;
+    if (!inGrid(drop.c, drop.r) || !data) return false;
+    const dev = deviceAt(drop.c, drop.r);
+    if (dev && dev.type === 'penbox' && SPECIAL_TREATS.has(data.type)) return isCellCargoEmpty(drop.c, drop.r);
+    if (dev) return !!entryKind(drop.c, drop.r, { data });
+    return isCellCargoEmpty(drop.c, drop.r);
+  }
+  function grabberHasPickupCandidate(b) {
+    if (!b || b.holding || isConstructing(b)) return false;
+    const pool = grabberPickupPool(b);
+    return pool.some(data => matchItem(b, data, pool) && grabberCanRouteData(b, data));
+  }
+  function higherPriorityGrabberClaimsPickup(b) {
+    const priority = grabberPriority(b);
+    const pickup = grabberRoles(b).pickup;
+    const sourcePen = frameGrabberSourcePens.get(b.id);
+    for (const other of frameGrabbersByPriority) {
+      if (other === b || grabberPriority(other) >= priority) continue;
+      if (sourcePen) {
+        if (frameGrabberSourcePens.get(other.id) !== sourcePen) continue;
+      } else {
+        const op = grabberRoles(other).pickup;
+        if (op.c !== pickup.c || op.r !== pickup.r) continue;
+      }
+      // 높은 순위 집게가 비어 있고 지금 집어갈 수 있을 때만 하위 순위를 대기시킨다.
+      // 이미 화물을 운송 중인 집게는 점유자로 보지 않아 여러 집게가 병렬로 움직인다.
+      if (grabberHasPickupCandidate(other)) return true;
+    }
+    return false;
+  }
   function updateGrabber(b, dt) {
     b.powerActivityT = Math.max(0, (b.powerActivityT || 0) - dt);
     b.cd = (b.cd || 0) + dt;
-    if (b.cd < grabberInterval(b)) return;
+    // 같은 생산 주기에서도 1→5 순서가 흔들리지 않도록 우선순위마다 0.02초씩 작동 시점을 늦춘다.
+    // 1순위=추가 지연 없음, 2순위=0.02초, ... 5순위=0.08초.
+    if (b.cd < grabberInterval(b) + grabberPriorityDelay(b)) return;
     const roles = grabberRoles(b);
     if (b.holding) {
       if (tryDropFromGrabber(b)) {
@@ -8143,26 +8617,32 @@ G.Factory = (function () {
       }
     } else {
       if (!grabberDropReady(b)) return;   // 출구가 화물로 가득이면 더 이상 옮기지 않음
+      // 같은 투입구에 더 높은 우선순위 집게가 잡을 수 있는 화물이 있으면 선점하지 않는다.
+      // 높은 순위 집게가 쿨다운 중이어도 우선권을 유지하되, 필터가 맞지 않으면 낮은 순위가 동작한다.
+      if (higherPriorityGrabberClaimsPickup(b)) return;
       const pk = roles.pickup;
       const dev = deviceAt(pk.c, pk.r);
-      if (dev && dev.type === 'penbox') {            // 우리에서 운치(묶음) 또는 생물 추출(필터)
-        let ex = takeUnchiFromPen(dev, b);
-        if (!ex) ex = takeFromPen(dev, b);
+      const sourcePen = frameGrabberSourcePens.get(b.id) || (dev && dev.type === 'penbox' ? dev : null);
+      if (sourcePen) {                                // 같은 우리 전체를 하나의 우선순위 그룹으로 처리
+        let ex = takeUnchiFromPen(sourcePen, b);
+        if (!ex) ex = takeFromPen(sourcePen, b);
         if (ex) { b.holding = ex; b.cd = 0; b.powerActivityT = Math.max(0.25, grabberInterval(b)); }
       } else if (dev && (dev.type === 'warehouse' || dev.type === 'largewarehouse' || dev.type === 'colony')) {  // 창고/콜로니에서 화물 추출(필터)
-        const ex = extractFromWarehouse(b); if (ex) { b.holding = ex; b.cd = 0; b.powerActivityT = Math.max(0.25, grabberInterval(b)); }
+        const ex = extractFromWarehouse(b, dev); if (ex) { b.holding = ex; b.cd = 0; b.powerActivityT = Math.max(0.25, grabberInterval(b)); }
       } else if (dev) {
         const ex = extractFromDevice(dev, b); if (ex) { b.holding = ex; b.cd = 0; b.powerActivityT = Math.max(0.25, grabberInterval(b)); }
       } else {
-        const cargoPool = S.cargo.filter(cg => Math.floor(cg.gx) === pk.c && Math.floor(cg.gy) === pk.r).map(cg => cg.data);
+        const cargoCell = (cargoIdx.get(pk.c + '|' + pk.r) || []).filter(cg => !cg._dead && Math.floor(cg.gx) === pk.c && Math.floor(cg.gy) === pk.r);
+        const cargoPool = cargoCell.map(cg => cg.data);
         let found = null;
-        for (const cg of S.cargo) if (Math.floor(cg.gx) === pk.c && Math.floor(cg.gy) === pk.r && matchItem(b, cg.data, cargoPool)) { found = cg; break; }
+        for (const cg of cargoCell) if (matchItem(b, cg.data, cargoPool)) { found = cg; break; }
         if (found) { b.holding = found.data; found._dead = true; S.cargo = S.cargo.filter(x => x !== found); b.cd = 0; b.powerActivityT = Math.max(0.25, grabberInterval(b)); }
         else {
           // 노동석은 집게/긴팔집게에 잡히지 않음
-          const wanderPool = S.wanderers.filter(w => !w._dead && !w.data.labor && Math.floor(w.gx) === pk.c && Math.floor(w.gy) === pk.r).map(w => w.data);
+          const wanderCell = nearbyWanderers(pk.c + 0.5, pk.r + 0.5, 1).filter(w => !w._dead && !w.data.labor && Math.floor(w.gx) === pk.c && Math.floor(w.gy) === pk.r);
+          const wanderPool = wanderCell.map(w => w.data);
           let wander = null;
-          for (const w of S.wanderers) if (!w._dead && !w.data.labor && Math.floor(w.gx) === pk.c && Math.floor(w.gy) === pk.r && matchItem(b, w.data, wanderPool)) { wander = w; break; }
+          for (const w of wanderCell) if (matchItem(b, w.data, wanderPool)) { wander = w; break; }
           if (wander) {
             // 노동석이 물건을 들고 있었다면 그 자리에 내려놓음(유실 방지)
             if (wander.data.carry) {
@@ -8199,6 +8679,11 @@ G.Factory = (function () {
         return;
       }
       const lk = k.toLowerCase();
+      if (lk === 'b') {
+        e.preventDefault();
+        openPlayerInventory();
+        return;
+      }
       if (['w', 'a', 's', 'd'].includes(lk)) {
         e.preventDefault();
         closeAuxPanels();
@@ -8981,6 +9466,7 @@ G.Factory = (function () {
     // 가시 셀 범위
     const vx0 = cam.x / CELL, vy0 = cam.y / CELL;
     const vx1 = (cam.x + canvas.width / cam.zoom) / CELL, vy1 = (cam.y + canvas.height / cam.zoom) / CELL;
+    renderView = { x0: vx0, y0: vy0, x1: vx1, y1: vy1 };
     const c0 = Math.max(0, Math.floor(vx0)), c1 = Math.min(COLS, Math.ceil(vx1));
     const r0 = Math.max(0, Math.floor(vy0)), r1 = Math.min(ROWS, Math.ceil(vy1));
 
@@ -10403,6 +10889,7 @@ G.Factory = (function () {
       if (!S.walls[key]) continue;
       const p = key.split('|'), A = +p[1], B = +p[2];
       const vertical = p[0] === 'V';
+      if (A < renderView.x0 - 1 || A > renderView.x1 + 1 || B < renderView.y0 - 1 || B > renderView.y1 + 1) continue;
       const rec = G.Assets.loadImage('assets/images/devices/' + (vertical ? 'wall_height.png' : 'wall_width.png'));
       const hasImg = !!(rec && rec.ok && rec.img.width);
       const fallbackOk = !!(fallback && fallback.ok && fallback.img.width);
@@ -10446,6 +10933,7 @@ G.Factory = (function () {
     for (const key of keys) {
       const p = key.split('|'), A = +p[1], B = +p[2];
       const vertical = p[0] === 'V';
+      if (A < renderView.x0 - 1 || A > renderView.x1 + 1 || B < renderView.y0 - 1 || B > renderView.y1 + 1) continue;
       const rec = G.Assets.loadImage('assets/images/devices/' + (vertical ? 'door_height.png' : 'door_width.png'));
       const hasImg = !!(rec && rec.ok && rec.img.width);
       const fallbackOk = !!(fallback && fallback.ok && fallback.img.width);
@@ -10746,5 +11234,5 @@ G.Factory = (function () {
   }
 
   function laborStatus() { return { count: S.wanderers.filter(w => w.data && w.data.labor).length, limit: laborLimit() }; }
-  return { init, update, render, reloadState, playOpeningIntro, screenToCell, tryLoadCreature, hoverDropTarget, clearDropHover, sellAllWarehouse, sellSomeType, sellPenCreatures, sellJissoFood, spawnWanderer, dropToFactory, dropFloorCargo, burstAt, stainAt, floatText, playSfxAt: playWorldSfx, triggerRaidCountdown, clearInvaders, endingCheat, chooseEnding, endingCinematicShot, endingCountdownFinale, endingCinematicTick, endingLaunchStart, endingLaunchFrame, finishStayEnding, researchPower, warehouseCount, laborStatus, powerUsageBreakdown, feedZoneMult, feedZoneInfo, pushOutOfFeeders, exportRuntimeState, importRuntimeState, refreshMenu, hotkeyBindings, hotkeyToolOptions, setBuildHotkey, questsForUI, acceptQuest, completeQuest, deliverQuest, questHasAny, marketMult, marketPct, forceTutorialGrowth, focusCameraOnGrid, tutorialGrowthLineConnected, landEnvironment, environmentAtPoint, environmentForBuilding, environmentEffectsForBuilding, hasOwnedEnvironment, recordUnchiProduced: n => { achievementStats().unchi += Math.max(0, n || 0); } };
+  return { init, update, render, reloadState, playOpeningIntro, screenToCell, tryLoadCreature, hoverDropTarget, clearDropHover, sellAllWarehouse, sellSomeType, sellPenCreatures, sellJissoFood, spawnWanderer, dropToFactory, dropFloorCargo, burstAt, stainAt, floatText, playSfxAt: playWorldSfx, triggerRaidCountdown, clearInvaders, endingCheat, chooseEnding, endingCinematicShot, endingCountdownFinale, endingCinematicTick, endingLaunchStart, endingLaunchFrame, finishStayEnding, researchPower, warehouseCount, playerInventoryCapacity, playerInventoryCount, playerInventoryRoom, laborStatus, powerUsageBreakdown, feedZoneMult, feedZoneInfo, pushOutOfFeeders, exportRuntimeState, importRuntimeState, refreshMenu, hotkeyBindings, hotkeyToolOptions, setBuildHotkey, questsForUI, acceptQuest, completeQuest, deliverQuest, questHasAny, marketMult, marketPct, forceTutorialGrowth, focusCameraOnGrid, tutorialGrowthLineConnected, landEnvironment, environmentAtPoint, environmentForBuilding, environmentEffectsForBuilding, hasOwnedEnvironment, recordUnchiProduced: n => { achievementStats().unchi += Math.max(0, n || 0); } };
 })();

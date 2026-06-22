@@ -107,7 +107,7 @@ window.G = window.G || {};
     ruinGrids: {},    // 유적 생성 완료 그리드
 
     // 창고/판매
-    warehouse: {},    // 생산품명 -> [data,...] 재고(판매 대기)
+    warehouse: {},    // 콜로니센터(플레이어) 인벤토리. 일반 난이도에서는 공유 창고 재고.
     autoSell: {},     // 생산품명 -> true (입고 즉시 자동 판매)
     sold: {},         // 생산품명 -> 누적 판매 수
     soldValueByType: {}, // 생산품명 -> 누적 판매액
@@ -219,6 +219,25 @@ window.G = window.G || {};
         base.warehouse['호화로운 만찬'].push(d);
       });
       delete base.warehouse['풍요로운 만찬'];
+    }
+    if (base.difficulty === 'dokura') {
+      for (const b of (base.buildings || [])) {
+        if (!b || (b.type !== 'warehouse' && b.type !== 'largewarehouse')) continue;
+        if (!b.inventory || typeof b.inventory !== 'object') b.inventory = {};
+        b.storageLevel = Math.max(0, Math.floor(b.storageLevel || 0));
+        for (const type of Object.keys(b.inventory)) {
+          const normalized = [];
+          for (const data of (Array.isArray(b.inventory[type]) ? b.inventory[type] : [])) {
+            const units = Math.max(1, Math.floor((data && data.amount) || 1));
+            for (let i = 0; i < units; i++) normalized.push(Object.assign({}, data, {
+              id: i === 0 && data.id != null ? data.id : base.nextId++,
+              amount: 1,
+              stats: data && data.stats ? Object.assign({}, data.stats) : { 크기: 0 },
+            }));
+          }
+          b.inventory[type] = normalized;
+        }
+      }
     }
     normalizeWalls(base);
     normalizeCreatureStats(base);

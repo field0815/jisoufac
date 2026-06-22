@@ -766,6 +766,13 @@ G.LINES = {
     adult: ['데갸아아악!', '와타시 섬섬옥수가!', '소중한 돌씨 뺏지 마는데스!', '데보오오옥'],
     child: ['데갸아아악!', '와타시 섬섬옥수가!', '소중한 돌씨 뺏지 마는테치!', '데보오오옥'],
   },
+  // 분쇄기 실장석 투입 직후. 독라·노동석·사육실장도 성장 단계에 맞는 대사 사용.
+  grinder: {
+    adult: ['데갸갸갹', '살려주는뎃', '똥닝겐!'],
+    child: ['테베베벡!', '테쨔아앗!', '싫은텟'],
+    thumb: ['찌베엣!', '레챠아악!'],
+    maggot: ['레훼엑!', '레', '격렬한 프니프니레후'],
+  },
   // 배합기: 배합 중(자실장 어미)
   mixer: ['빙글빙글 어지러운테치', '이건 아동착취인테치', '실장권 위반인테치야!'],
   // 행복이 0이 되어 행복회로에 빠졌을 때 머리 위 표시
@@ -910,6 +917,15 @@ G.QUEST_CONFIG = {
   STATIC_TIME: 1.6,      // 무전 직전 치지직 효과 시간(초). 대사창 클릭 시 즉시 스킵
   TYPE_SPEED: 18,        // 대사 한 글자 출력 간격(ms). 타이핑 중 클릭 시 즉시 전체 표시
 };
+// 모든 단체에 우선 적용되는 의뢰 전용 개당 환산가.
+G.QUEST_ITEM_UNITS = {
+  운치: 30,
+  농축운치: 90,
+  고농축운치: 210,
+  초고농축운치: 400,
+  독라: 100,
+  새끼독라: 60,
+};
 G.QUEST_ORGS = {
   vault44: {
     name: '44방공호', short: '44', color: '#c9a24a', minTier: 0, reward: 'money', weight: 40,
@@ -922,8 +938,8 @@ G.QUEST_ORGS = {
     reqs: [
       { item: '실장육', qty: 50, unit: 22 }, { item: '분쇄육', qty: 60, unit: 8 },
       { item: '통조림', qty: 30, unit: 600, research: '포장기' }, { item: '진공포장', qty: 30, unit: 800, research: '포장기' },
-      { item: '운치', qty: 200, unit: 3, tier: 1 }, { item: '농축운치', qty: 30, unit: 18, tier: 1, research: '배합기' },
-      { item: '고농축운치', qty: 20, unit: 90, tier: 2, research: '배합기' },
+      { item: '운치', qty: 200, unit: 30, tier: 1 }, { item: '농축운치', qty: 30, unit: 90, tier: 1, research: '배합기' },
+      { item: '고농축운치', qty: 20, unit: 210, tier: 2, research: '배합기' },
     ],
     lines: ['방공호의 보급이 끊겼다. 최대한 많이 부탁해.', '사람이 굶고 있다. 빨리 보내주면 좋겠군.', '화로가 식고있다. 뭐든 태울 것 좀 보내라.'],
     done: ['살았다. 다음도 부탁한다.', '덕분에 한숨 돌렸다. 고맙군.'],
@@ -972,7 +988,7 @@ G.QUEST_ORGS = {
     ],
     reqs: [
       { item: '구더기', qty: 30, unit: 4 }, { item: '엄지', qty: 30, unit: 6 }, { item: '자실장', qty: 20, unit: 10 },
-      { item: '성체실장', qty: 20, unit: 14 }, { item: '독라', qty: 20, unit: 14 },
+      { item: '성체실장', qty: 20, unit: 14 }, { item: '독라', qty: 20, unit: 100 },
       { item: '사육실장', qty: 10, unit: 500, research: '교정시설' },   // 사육실장은 더 후한 보상
       { item: '도돈파', qty: 10, unit: 200, tier: 2, research: '조리실' }, { item: '코로리', qty: 10, unit: 240, tier: 2, research: '조리실' }, { item: '도로리', qty: 10, unit: 360, tier: 3, research: '조리실' },
     ],
@@ -988,7 +1004,7 @@ G.QUEST_ORGS = {
       '깨달은 제물을 바쳐라. 낙원이 가까워진다.',
     ],
     reqs: [
-      { item: '독라', qty: 10, unit: 16, stat: { key: '개념', min: 80 } },
+      { item: '독라', qty: 10, unit: 100, stat: { key: '개념', min: 80 } },
       { item: '대형위석', qty: 10, unit: 40 }, { item: '중형위석', qty: 20, unit: 24 }, { item: '소형위석', qty: 20, unit: 16 },
     ],
     lines: ['깨달은 제물을 바쳐라. 낙원이 가까워진다.', '카오스 실장석이 우리를 구원하리라.'],
