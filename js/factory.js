@@ -5159,6 +5159,15 @@ G.Factory = (function () {
     cam.y += y / len * speed * dt;
     clampCamera();
   }
+  function penVisualActive(pen, margin) {
+    if (!canvas || !pen) return true;
+    const pad = margin == null ? 3 : margin;
+    const vx0 = cam.x / CELL - pad;
+    const vy0 = cam.y / CELL - pad;
+    const vx1 = (cam.x + canvas.width / cam.zoom) / CELL + pad;
+    const vy1 = (cam.y + canvas.height / cam.zoom) / CELL + pad;
+    return !(pen.col > vx1 || pen.col + pen.w < vx0 || pen.row > vy1 || pen.row + pen.h < vy0);
+  }
   function focusCameraOnGrid(gx, gy) {
     cam.x = gx * CELL - canvas.width / (2 * cam.zoom);
     cam.y = gy * CELL - canvas.height / (2 * cam.zoom);
@@ -11370,5 +11379,5 @@ G.Factory = (function () {
   }
 
   function laborStatus() { return { count: S.wanderers.filter(w => w.data && w.data.labor).length, limit: laborLimit() }; }
-  return { init, update, updateCamera: updateCameraKeys, render, reloadState, playOpeningIntro, screenToCell, tryLoadCreature, hoverDropTarget, clearDropHover, sellAllWarehouse, sellSomeType, sellPenCreatures, sellJissoFood, spawnWanderer, dropToFactory, dropFloorCargo, burstAt, stainAt, floatText, playSfxAt: playWorldSfx, triggerRaidCountdown, clearInvaders, endingCheat, chooseEnding, endingCinematicShot, endingCountdownFinale, endingCinematicTick, endingLaunchStart, endingLaunchFrame, finishStayEnding, researchPower, warehouseCount, playerInventoryCapacity, playerInventoryCount, playerInventoryRoom, laborStatus, powerUsageBreakdown, feedZoneMult, feedZoneInfo, pushOutOfFeeders, exportRuntimeState, importRuntimeState, refreshMenu, hotkeyBindings, hotkeyToolOptions, setBuildHotkey, questsForUI, acceptQuest, completeQuest, deliverQuest, questHasAny, marketMult, marketPct, forceTutorialGrowth, focusCameraOnGrid, tutorialGrowthLineConnected, landEnvironment, environmentAtPoint, environmentForBuilding, environmentEffectsForBuilding, hasOwnedEnvironment, recordUnchiProduced: n => { achievementStats().unchi += Math.max(0, n || 0); } };
+  return { init, update, updateCamera: updateCameraKeys, penVisualActive, render, reloadState, playOpeningIntro, screenToCell, tryLoadCreature, hoverDropTarget, clearDropHover, sellAllWarehouse, sellSomeType, sellPenCreatures, sellJissoFood, spawnWanderer, dropToFactory, dropFloorCargo, burstAt, stainAt, floatText, playSfxAt: playWorldSfx, triggerRaidCountdown, clearInvaders, endingCheat, chooseEnding, endingCinematicShot, endingCountdownFinale, endingCinematicTick, endingLaunchStart, endingLaunchFrame, finishStayEnding, researchPower, warehouseCount, playerInventoryCapacity, playerInventoryCount, playerInventoryRoom, laborStatus, powerUsageBreakdown, feedZoneMult, feedZoneInfo, pushOutOfFeeders, exportRuntimeState, importRuntimeState, refreshMenu, hotkeyBindings, hotkeyToolOptions, setBuildHotkey, questsForUI, acceptQuest, completeQuest, deliverQuest, questHasAny, marketMult, marketPct, forceTutorialGrowth, focusCameraOnGrid, tutorialGrowthLineConnected, landEnvironment, environmentAtPoint, environmentForBuilding, environmentEffectsForBuilding, hasOwnedEnvironment, recordUnchiProduced: n => { achievementStats().unchi += Math.max(0, n || 0); } };
 })();

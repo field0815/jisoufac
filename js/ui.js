@@ -26,12 +26,26 @@ G.UI = (function () {
   let tutorialAdvanceTimer = 0;
   let titleTooltipEl;
   let tooltipOwner = null;
+  const topDomSig = {};
+  let lastResearchStripSig = '';
+  let lastPowerDetailSig = '';
 
   function escAttr(s) { return String(s).replace(/"/g, '&quot;'); }
   function productIcon(type, cls) {
     const def = G.PRODUCTS[type];
     if (!def || !def.img) return `<span class="${cls}" style="background:${def ? def.color : '#888'}"></span>`;
     return `<span class="${cls}" style="background-image:url('assets/images/products/${escAttr(def.img)}');background-size:contain;background-position:center;"></span>`;
+  }
+  function setTextIfChanged(idOrEl, value) {
+    const el = typeof idOrEl === 'string' ? document.getElementById(idOrEl) : idOrEl;
+    if (!el) return;
+    const text = String(value);
+    if (el.textContent !== text) el.textContent = text;
+  }
+  function setHtmlIfChanged(el, html) {
+    if (!el || el.dataset.htmlSig === html) return;
+    el.dataset.htmlSig = html;
+    el.innerHTML = html;
   }
   function creatureIcon(type, cls) {
     const def = G.CREATURES[type];
@@ -864,7 +878,7 @@ G.UI = (function () {
   }
   function closeOptions() { if (optionsEl) optionsEl.classList.remove('open'); }
   function renderOptions() {
-    if (!optionsEl) return;
+    if (!optionsEl || !optionsEl.classList.contains('open')) return;
     renderSaveSlots();
     const t = G.Save && G.Save.savedAt ? G.Save.savedAt() : null;
     const line = document.getElementById('opt-save-time');
@@ -2409,7 +2423,7 @@ G.UI = (function () {
       lastFeedSig = sig;
       el.innerHTML = types.map(t => `<span class="tb-ct" data-feed="${escAttr(t)}" title="${escAttr(t)} 재고">${productIcon(t, 'res-icon')}<b>0</b></span>`).join('');
     }
-    types.forEach(t => { const s = el.querySelector(`[data-feed="${escAttr(t)}"] b`); if (s) s.textContent = Math.floor(feedStock(t)); });
+    types.forEach(t => { const s = el.querySelector(`[data-feed="${escAttr(t)}"] b`); if (s) setTextIfChanged(s, Math.floor(feedStock(t))); });
   }
   // 우리 안 종류별 개체 수 집계
   function penCounts() {
@@ -2421,6 +2435,10 @@ G.UI = (function () {
     const el = document.getElementById('research-queue-strip'); if (!el) return;
     const cur = S.currentResearch;
     const q = S.researchQueue || [];
+    const sig = (cur ? [cur.key, cur.name, cur.targetLevel, Math.floor(S.researchProgress || 0), cur.cost].join(':') : 'idle') + '|' +
+      q.map((r, i) => [i, r.key, r.name, r.targetLevel].join(':')).join('|');
+    if (sig === lastResearchStripSig) return;
+    lastResearchStripSig = sig;
     if (!cur && !q.length) { el.innerHTML = '<span class="rq-empty">연구 없음</span>'; return; }
     const queueButtons = q.map((r, i) =>
       `<button class="rq-next" data-cancel-top-research="queue" data-idx="${i}" title="클릭하면 예약 취소">${escAttr(r.name)} Lv.${r.targetLevel}</button>`
@@ -2447,18 +2465,20 @@ G.UI = (function () {
       spawnMoneyUiParticles(curMoney - lastMoney);
       lastMoney = curMoney;
     }
-    document.getElementById('tb-money').textContent = Math.floor(S.money).toLocaleString();
+    setTextIfChanged('tb-money', Math.floor(S.money).toLocaleString());
     const pw = document.getElementById('tb-power');
     if (pw) {
       const used = Math.floor(S.powerUsed || 0).toLocaleString();
       const total = Math.floor(S.power || 0).toLocaleString();
-      pw.textContent = used + '/' + total;
-      const info = G.Factory && G.Factory.powerUsageBreakdown ? G.Factory.powerUsageBreakdown() : null;
-      const rows = obj => Object.entries(obj || {}).sort((a, b) => b[1] - a[1]).map(([name, n]) => name + ' ' + n.toLocaleString());
-      const useRows = info ? rows(info.use) : [];
-      const supplyRows = info ? rows(info.supply) : [];
+      const powerSig = used + '/' + total;
+      setTextIfChanged(pw, powerSig);
       const powerBox = pw.closest('.tb-power');
-      if (powerBox) {
+      if (powerBox && (powerSig !== lastPowerDetailSig || tooltipOwner === powerBox)) {
+        lastPowerDetailSig = powerSig;
+        const info = G.Factory && G.Factory.powerUsageBreakdown ? G.Factory.powerUsageBreakdown() : null;
+        const rows = obj => Object.entries(obj || {}).sort((a, b) => b[1] - a[1]).map(([name, n]) => name + ' ' + n.toLocaleString());
+        const useRows = info ? rows(info.use) : [];
+        const supplyRows = info ? rows(info.supply) : [];
         const text = [
           '전력 ' + used + '/' + total,
           '',
@@ -2468,15 +2488,17 @@ G.UI = (function () {
           '공급원',
           ...(supplyRows.length ? supplyRows : ['없음']),
         ].join('\n');
-        powerBox.setAttribute('title', text);
-        powerBox.dataset.nativeTitle = text;
+        if (powerBox.dataset.nativeTitle !== text) {
+          powerBox.setAttribute('title', text);
+          powerBox.dataset.nativeTitle = text;
+        }
         if (tooltipOwner === powerBox && titleTooltipEl) titleTooltipEl.querySelector('.mt-text').textContent = text;
       }
     }
     const sc = document.getElementById('tb-scrap'); if (sc) sc.textContent = warehouseCount('철조각').toLocaleString();
     // 우리 안 종류별 수(아이콘+숫자)
     const cnt = penCounts();
-    const setCt = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    const setCt = (id, v) => setTextIfChanged(id, v);
     setCt('tb-c-adult', cnt.성체실장); setCt('tb-c-child', cnt.자실장); setCt('tb-c-dok', cnt.독라);
     setCt('tb-c-petchild', cnt.새끼사육실장); setCt('tb-c-pet', cnt.사육실장);
     if (G.Factory && G.Factory.laborStatus) { const ls = G.Factory.laborStatus(); setCt('tb-labor', ls.count + '/' + ls.limit); }
@@ -2484,7 +2506,7 @@ G.UI = (function () {
     renderResearchQueueStrip();
     const rt = document.getElementById('raid-timer');
     if (rt) {
-      rt.textContent = raidTimerText();
+      setTextIfChanged(rt, raidTimerText());
       const raidStart = S.difficulty === 'breeding' ? 2400 : (C.RAID_START || 0);
       rt.classList.toggle('armed', (S.playTime || 0) >= raidStart);
     }

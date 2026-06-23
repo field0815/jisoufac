@@ -7,7 +7,6 @@ window.G = window.G || {};
 G.Pens = (function () {
   const C = G.CONFIG;
   const S = G.State;
-  let currentDt = 0;
 
   function allPens() { return S.buildings.filter(b => b.type === 'penbox'); }
   function penCells(pen) {
@@ -51,6 +50,9 @@ G.Pens = (function () {
     const gy = pen.row + ((c && c.py != null) ? c.py : 0.5);
     if (G.Factory && G.Factory.playSfxAt) G.Factory.playSfxAt(key, gx, gy);
     else G.Assets.playSfx(key);
+  }
+  function penVisualActive(pen) {
+    return !G.Factory || !G.Factory.penVisualActive || G.Factory.penVisualActive(pen);
   }
   function applyFoodRecovery(c, dt, ratio) {
     if (!c || !c.stats || ratio <= 0) return;
@@ -153,7 +155,6 @@ G.Pens = (function () {
   function totalYoung() { let n = 0; allPens().forEach(p => n += countYoung(p)); return n; }
 
   function update(dt) {
-    currentDt = dt;
     const pens = allPens();
     specialTreatCache = (S.cargo || []).filter(cg => !cg._dead && cg.data && SPECIAL_TREATS.has(cg.data.type));
     const penned = [];
@@ -350,6 +351,7 @@ G.Pens = (function () {
   // 우리 내 개체 충돌 분리(서로 겹치지 않게)
   function collRad(type) { return 0.34 * ((C.DISPLAY_SCALE && C.DISPLAY_SCALE[type]) || 1); }
   function separate(pen) {
+    if (!penVisualActive(pen)) return;
     const list = pen.creatures, n = list.length;
     if (n > 1) {
       // 공간 해시: 같은/인접 셀끼리만 비교 (최대 분리거리 0.68 < 1칸) — 대형 우리 O(n²) 방지
@@ -389,8 +391,10 @@ G.Pens = (function () {
   }
 
   function wander(c, pen, dt) {
+    const active = penVisualActive(pen);
     if (c.scream > 0) c.scream -= dt;   // '데챠앗!' 표시 시간 감소
     if (c.speechT > 0) c.speechT -= dt; // 말풍선 시간 감소
+    if (!active) return;
     else {
       c.penTalkT = (c.penTalkT == null ? 5 + Math.random() * 8 : c.penTalkT) - dt;
       if (c.penTalkT <= 0) {
@@ -445,6 +449,7 @@ G.Pens = (function () {
     return best;
   }
   function tryEatSpecialTreat(pen, c) {
+    if (!penVisualActive(pen)) return false;
     const cg = nearestSpecialTreat(pen, c, 0.7);
     if (!cg) return false;
     const idx = S.cargo.indexOf(cg);
