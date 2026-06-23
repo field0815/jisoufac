@@ -7,12 +7,18 @@ window.G = window.G || {};
 G.Pens = (function () {
   const C = G.CONFIG;
   const S = G.State;
+  let currentDt = 0;
 
   function allPens() { return S.buildings.filter(b => b.type === 'penbox'); }
   function penCells(pen) {
     if (Array.isArray(pen.cells) && pen.cells.length) return pen.cells;
+    const key = (pen.w || 0) + 'x' + (pen.h || 0);
+    if (pen._cellCacheKey === key && Array.isArray(pen._cellCache)) return pen._cellCache;
     const cells = [];
     for (let r = 0; r < pen.h; r++) for (let c = 0; c < pen.w; c++) cells.push({ c, r });
+    pen._cellCacheKey = key;
+    pen._cellCache = cells;
+    pen._cellSet = new Set(cells.map(cell => cell.c + '|' + cell.r));
     return cells;
   }
   function cells(pen) { return penCells(pen).length; }
@@ -31,8 +37,15 @@ G.Pens = (function () {
   function isAdult(c) { return G.CREATURES[c.type] && G.CREATURES[c.type].isAdult; }
   function countAdult(pen) { return pen.creatures.filter(isAdult).length; }
   function countYoung(pen) { return pen.creatures.length - countAdult(pen); }
+  let specialTreatCache = [];
   const SPECIAL_TREATS = new Set(['콘페이토', '도돈파', '코로리', '도로리']);
-  function hasCell(pen, c, r) { return penCells(pen).some(cell => cell.c === c && cell.r === r); }
+  function hasCell(pen, c, r) {
+    if (!Array.isArray(pen.cells) || !pen.cells.length) {
+      penCells(pen);
+      if (pen._cellSet) return pen._cellSet.has(c + '|' + r);
+    }
+    return penCells(pen).some(cell => cell.c === c && cell.r === r);
+  }
   function playPenSfx(key, pen, c) {
     const gx = pen.col + ((c && c.px != null) ? c.px : 0.5);
     const gy = pen.row + ((c && c.py != null) ? c.py : 0.5);
@@ -140,7 +153,9 @@ G.Pens = (function () {
   function totalYoung() { let n = 0; allPens().forEach(p => n += countYoung(p)); return n; }
 
   function update(dt) {
+    currentDt = dt;
     const pens = allPens();
+    specialTreatCache = (S.cargo || []).filter(cg => !cg._dead && cg.data && SPECIAL_TREATS.has(cg.data.type));
     const penned = [];
     pens.forEach(p => p.creatures.forEach(c => penned.push(c)));
     const loose = S.wanderers.map(w => w.data);
@@ -148,10 +163,15 @@ G.Pens = (function () {
     // 사료 수요 — 사료분배기 범위 안: 선택 사료를 2배 소모(전역 자원). 범위 밖: 우리 바닥 운치(똥) 섭취.
     let demandPerMin = 0, unchiPerMin = 0;
     const feedInfo = (gx, gy) => (G.Factory.feedZoneInfo ? G.Factory.feedZoneInfo(gx, gy) : { inZone: false, type: '실장푸드', mult: 1 });
+    const effectCache = new Map();
     const penEffects = (pen) => {
-      if (G.Factory.environmentEffectsForBuilding) return G.Factory.environmentEffectsForBuilding(pen);
-      const env = G.Factory.environmentForBuilding ? G.Factory.environmentForBuilding(pen) : null;
-      return (env && env.effects) || {};
+      const key = pen && pen.id;
+      if (effectCache.has(key)) return effectCache.get(key);
+      const effects = G.Factory.environmentEffectsForBuilding
+        ? G.Factory.environmentEffectsForBuilding(pen)
+        : (((G.Factory.environmentForBuilding && G.Factory.environmentForBuilding(pen)) || {}).effects || {});
+      effectCache.set(key, effects);
+      return effects;
     };
     const difficultyFoodMult = S.difficulty === 'breeding' ? 0.5 : 1;
     pens.forEach(p => p.creatures.forEach(c => {
@@ -413,9 +433,10 @@ G.Pens = (function () {
   }
 
   function nearestSpecialTreat(pen, c, range) {
+    if (!specialTreatCache.length) return null;
     let best = null, bd = range == null ? 4.5 : range;
     const gx = pen.col + (c.px || 0.5), gy = pen.row + (c.py || 0.5);
-    for (const cg of S.cargo) {
+    for (const cg of specialTreatCache) {
       if (!SPECIAL_TREATS.has(cg.data.type)) continue;
       if (Math.abs(cg.gx - gx) > bd || Math.abs(cg.gy - gy) > bd) continue;
       const d = Math.hypot(cg.gx - gx, cg.gy - gy);

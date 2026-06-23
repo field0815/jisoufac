@@ -12,6 +12,7 @@ G.Factory = (function () {
   const DIR = G.DIR;
   const CELL = C.CELL, COLS = C.GRID_COLS, ROWS = C.GRID_ROWS;
   const COLLIDE = 10 / CELL;
+  const CROSSBELT_MAX_DISTANCE = 7;
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const statMax = () => C.STAT_MAX || 200;
   const sizeMax = () => C.SIZE_MAX || 50;
@@ -139,8 +140,8 @@ G.Factory = (function () {
   const FEED_DESC = {
     운치: '공짜 사료(똥). 성장 ×1.1로 빠르지만 육질·개념이 깎이고 크기만 커진다.',
     실장푸드: '기본 사료. 성장을 촉진하고 육질·행복·체력을 회복시킨다.',
-    '짓소산 푸드': '특수 사료. 식사 시 육질·행복이 오를 확률이 있다.',
-    우마이푸드: '특수 사료. 성장 ×3에 행복이 꾸준히 상승한다.',
+    '짓소산 푸드': '특수 사료. 체력을 회복하고 식사 시 육질·행복이 오를 확률이 있다.',
+    우마이푸드: '특수 사료. 체력을 회복하고 성장 ×3에 행복이 꾸준히 상승한다.',
     다이어트푸드: '특수 사료. 체력을 회복시키고 성장 속도를 ×0.5로 억제한다.',
   };
   const SORTER_BUF = 4;   // 분류기 내부 버퍼 용량
@@ -179,7 +180,17 @@ G.Factory = (function () {
   let wanderSpatial = new Map();
   let cargoSpatial = new Map();
   let renderView = { x0: 0, y0: 0, x1: 0, y1: 0 };
-  const frameCache = { pens: [], warehouses: [], feedZones: [], birthZones: [], specialColliders: [] };
+  const frameCache = {
+    pens: [],
+    warehouses: [],
+    feedZones: [],
+    feedZoneRects: [],
+    birthZones: [],
+    birthZoneRects: [],
+    specialColliders: [],
+    penCellMap: new Map(),
+    feedCellCache: new Map(),
+  };
   function spatialKey(gx, gy) { return Math.floor(gx / SPATIAL_BUCKET) + '|' + Math.floor(gy / SPATIAL_BUCKET); }
   function spatialAdd(map, obj, gx, gy) {
     const k = spatialKey(gx, gy), list = map.get(k);
@@ -205,6 +216,10 @@ G.Factory = (function () {
     cargoSpatial = new Map();
     for (const cg of S.cargo) if (!cg._dead) spatialAdd(cargoSpatial, cg, cg.gx, cg.gy);
   }
+  function rebuildCargoIndex() {
+    cargoIdx = new Map();
+    for (const cg of S.cargo) if (!cg._dead) cargoIdxAdd(cg);
+  }
   function cargoIdxAdd(cg) {
     const k = Math.floor(cg.gx) + '|' + Math.floor(cg.gy);
     const a = cargoIdx.get(k);
@@ -212,21 +227,31 @@ G.Factory = (function () {
   }
   function rebuildFrameCaches() {
     frameCache.pens.length = 0; frameCache.warehouses.length = 0;
-    frameCache.feedZones.length = 0; frameCache.birthZones.length = 0; frameCache.specialColliders.length = 0;
+    frameCache.feedZones.length = 0; frameCache.feedZoneRects.length = 0;
+    frameCache.birthZones.length = 0; frameCache.birthZoneRects.length = 0;
+    frameCache.specialColliders.length = 0;
+    frameCache.penCellMap.clear();
+    frameCache.feedCellCache.clear();
     for (const b of S.buildings) {
       const def = G.DEVICES[b.type];
       if (!def) continue;
-      if (b.type === 'penbox') frameCache.pens.push(b);
+      if (b.type === 'penbox') {
+        frameCache.pens.push(b);
+        for (const cell of penAbsCells(b)) frameCache.penCellMap.set(cell.c + '|' + cell.r, b);
+      }
       else if (b.type === 'warehouse' || b.type === 'largewarehouse' || b.type === 'colony') frameCache.warehouses.push(b);
-      else if (def.special === 'feed') frameCache.feedZones.push(b);
-      else if (def.special === 'birth') frameCache.birthZones.push(b);
+      else if (def.special === 'feed') {
+        frameCache.feedZones.push(b);
+        frameCache.feedZoneRects.push({ b, rect: rangeRect(b.type, b.col, b.row, b.dir) });
+      }
+      else if (def.special === 'birth') {
+        frameCache.birthZones.push(b);
+        frameCache.birthZoneRects.push({ b, rect: rangeRect(b.type, b.col, b.row, b.dir) });
+      }
       if (b.type === 'techica' && (b.w !== 1 || b.h !== 1)) { b.w = 1; b.h = 1; }   // 1×1 보정(구버전 호환)
       if (b.type === 'skewer' || b.type === 'techica') frameCache.specialColliders.push(b);
     }
-    cargoIdx = new Map();
-    for (const cg of S.cargo) {
-      cargoIdxAdd(cg);
-    }
+    rebuildCargoIndex();
     rebuildCargoSpatial();
     rebuildWanderSpatial();
   }
@@ -1402,7 +1427,7 @@ G.Factory = (function () {
     setStatus(type === 'chaosgate'
       ? '드래그 하여 입구와 출구를 동시에 설치하세요'
       : type === 'crossbelt'
-      ? '직선으로 드래그하여 최대 5칸 안에 출구를 설치하세요'
+      ? `직선으로 드래그하여 최대 ${CROSSBELT_MAX_DISTANCE}칸 안에 출구를 설치하세요`
       : `설치 중: <b>${G.DEVICES[type].name}</b> (R=회전, 우클릭=취소, 좌클릭=설치)`);
   }
   function cancelTool() {
@@ -2985,10 +3010,20 @@ G.Factory = (function () {
   function specialList(special) { return S.buildings.filter(b => G.DEVICES[b.type] && G.DEVICES[b.type].special === special); }
   // 사료분배기 범위 배수(우리 시스템에서 개체마다 호출 — 프레임 캐시 사용)
   function feedZoneInfo(gx, gy) {
-    for (const f of frameCache.feedZones) {
-      if (inRect(rangeRect(f.type, f.col, f.row, f.dir), gx, gy)) return { inZone: true, mult: (C.FEED_GROWTH_MULT || 1) * electricMult(f), type: f.feedType || '실장푸드' };
+    const key = Math.floor(gx) + '|' + Math.floor(gy);
+    const cached = frameCache.feedCellCache.get(key);
+    if (cached) return cached;
+    for (const z of frameCache.feedZoneRects) {
+      const f = z.b;
+      if (inRect(z.rect, gx, gy)) {
+        const hit = { inZone: true, mult: (C.FEED_GROWTH_MULT || 1) * electricMult(f), type: f.feedType || '실장푸드' };
+        frameCache.feedCellCache.set(key, hit);
+        return hit;
+      }
     }
-    return { inZone: false, mult: 1, type: '실장푸드' };
+    const miss = { inZone: false, mult: 1, type: '실장푸드' };
+    frameCache.feedCellCache.set(key, miss);
+    return miss;
   }
   function feedZoneMult(gx, gy) {
     return feedZoneInfo(gx, gy).mult;
@@ -3969,7 +4004,7 @@ G.Factory = (function () {
   }
   function placeCrossbelt(a, rawEnd) {
     if (!a || !rawEnd || !isUnlocked('crossbelt')) return false;
-    const z = straightTransportEnd(a, rawEnd, 5);
+    const z = straightTransportEnd(a, rawEnd, CROSSBELT_MAX_DISTANCE);
     if (!inGrid(a.col, a.row) || !inGrid(z.col, z.row)) return false;
     if (!isOwnedCell(a.col, a.row) || !isOwnedCell(z.col, z.row)) return false;
     if (occAt(a.col, a.row) || occAt(z.col, z.row) || hasBelt(a.col, a.row) || hasBelt(z.col, z.row)) return false;
@@ -4887,6 +4922,57 @@ G.Factory = (function () {
     spatialAdd(cargoSpatial, cg, cg.gx, cg.gy);
     return cg;
   }
+  function cargoUnitCount(cg) {
+    const list = Array.isArray(cg && cg.stack) ? cg.stack : (cg && cg.data ? [cg.data] : []);
+    return list.reduce((sum, data) => sum + Math.max(1, Math.floor((data && data.amount) || 1)), 0);
+  }
+  function cargoStackList(cg) {
+    if (!Array.isArray(cg.stack) || !cg.stack.length) cg.stack = cg.data ? [cg.data] : [];
+    return cg.stack;
+  }
+  function takeCargoUnit(cg) {
+    if (!cg || cg._dead) return null;
+    const stack = cargoStackList(cg);
+    const data = stack.pop();
+    if (stack.length) {
+      cg.data = stack[stack.length - 1];
+      cg.stack = stack;
+    } else {
+      cg._dead = true;
+      cg.stack = null;
+    }
+    return data || null;
+  }
+  function removeCargoRef(cg) {
+    if (!cg) return;
+    cg._dead = true;
+    S.cargo = S.cargo.filter(x => x !== cg);
+  }
+  function stackableFloorCargo(cg) {
+    if (!cg || cg._dead || !cg.data || !cg.data.type) return false;
+    if (G.CREATURES[cg.data.type]) return false;
+    const c = Math.floor(cg.gx), r = Math.floor(cg.gy);
+    if (!inGrid(c, r) || isBeltLike(c, r) || deviceAt(c, r)) return false;
+    return true;
+  }
+  function compactFloorCargoStacks() {
+    const groups = new Map(), keep = [];
+    for (const cg of S.cargo) {
+      if (!stackableFloorCargo(cg)) { keep.push(cg); continue; }
+      const key = Math.floor(cg.gx) + '|' + Math.floor(cg.gy) + '|' + cg.data.type;
+      const head = groups.get(key);
+      if (!head) {
+        groups.set(key, cg);
+        cargoStackList(cg);
+        keep.push(cg);
+      } else {
+        head.stack = cargoStackList(head).concat(cargoStackList(cg));
+        head.data = head.stack[head.stack.length - 1];
+        cg._dead = true;
+      }
+    }
+    if (keep.length !== S.cargo.length) S.cargo = keep;
+  }
   function cellOf(cg) { return { c: Math.floor(cg.gx), r: Math.floor(cg.gy) }; }
   // 외부(우리 등)에서 화물을 바닥에 떨어뜨림(벨트/장치로 운반 가능)
   function dropFloorCargo(data, col, row) {
@@ -4999,7 +5085,7 @@ G.Factory = (function () {
   }
 
   /* ---- 시뮬레이션 ----------------------------------------------------- */
-  function update(dt) { rebuildFrameCaches(); updateCameraKeys(dt); tickEconomy(dt); tickWeather(dt); tickInvasion(dt); updateRenewableRuins(dt); updateCargo(dt); rebuildCargoSpatial(); updateDevices(dt); updateResearch(dt); updateColonyUpgrade(dt); updateEnding(dt); updateWanderers(dt); updateMortarShells(dt); updateExplosionEffects(dt); updateParticles(dt); updateFloatTexts(dt); updateCoinEffects(dt); updateStains(dt); updateBgmMode(dt); tickQuests(dt); renderInventoryPanels(false); achievementStats().powerUsed += Math.max(0, S.powerUsed || 0) * dt; tickMonumentAchievements(); }
+  function update(dt) { rebuildFrameCaches(); tickEconomy(dt); tickWeather(dt); tickInvasion(dt); updateRenewableRuins(dt); updateCargo(dt); compactFloorCargoStacks(); rebuildCargoIndex(); rebuildCargoSpatial(); updateDevices(dt); updateResearch(dt); updateColonyUpgrade(dt); updateEnding(dt); updateWanderers(dt); updateMortarShells(dt); updateExplosionEffects(dt); updateParticles(dt); updateFloatTexts(dt); updateCoinEffects(dt); updateStains(dt); updateBgmMode(dt); tickQuests(dt); renderInventoryPanels(false); achievementStats().powerUsed += Math.max(0, S.powerUsed || 0) * dt; tickMonumentAchievements(); }
   function tickWeather(dt) {
     if (!S.weather) S.weather = { rollIn: C.WEATHER_ROLL_SEC || 60, rainLeft: 0 };
     const w = S.weather;
@@ -5933,8 +6019,9 @@ G.Factory = (function () {
       w.ate = (w.ate || 0) + 1; w._tgt = null; w.goal = null; w.seekCd = 0;
       w.data.speech = '우마우마한데스!'; w.data.speechT = 1.6;
     } else if (tgt.kind === 'cargo') {
-      const cg = tgt.ref; cg._dead = true;
-      const i = S.cargo.indexOf(cg); if (i >= 0) S.cargo.splice(i, 1);
+      const cg = tgt.ref;
+      takeCargoUnit(cg);
+      if (cg._dead) { const i = S.cargo.indexOf(cg); if (i >= 0) S.cargo.splice(i, 1); }
       burstAt(cg.gx, cg.gy);
       w.ate = (w.ate || 0) + 1; w._tgt = null; w.goal = null; w.seekCd = 0;
       w.data.speech = '우마우마한데스!'; w.data.speechT = 1.6;
@@ -6026,10 +6113,13 @@ G.Factory = (function () {
       if (!EDIBLE.has(cg.data.type)) continue;
       if ((w.raider || w.invade) && cg.data.raidMeat) continue;
       if (Math.hypot(cg.gx - w.gx, cg.gy - w.gy) > range) continue;
-      cg._dead = true;
-      const i = S.cargo.indexOf(cg);
-      if (i >= 0) S.cargo.splice(i, 1);
-      const killed = applySpecialTreatEffect(w.data, cg.data.type, w.gx, w.gy);
+      const eaten = takeCargoUnit(cg);
+      if (cg._dead) {
+        const i = S.cargo.indexOf(cg);
+        if (i >= 0) S.cargo.splice(i, 1);
+      }
+      if (!eaten) continue;
+      const killed = applySpecialTreatEffect(w.data, eaten.type, w.gx, w.gy);
       if (killed) { w._dead = true; return true; }
       const line = (G.LINES.eat && (G.LINES.eat[w.data.type] || G.LINES.eat.성체실장)) || '우마우마한데스';
       w.data.speech = line; w.data.speechT = 2.2;
@@ -6849,7 +6939,7 @@ G.Factory = (function () {
       const direct = deviceAt(pk.c, pk.r);
       const pen = direct && direct.type === 'penbox'
         ? direct
-        : frameCache.pens.find(p => penAbsCells(p).some(cell => cell.c === pk.c && cell.r === pk.r));
+        : frameCache.penCellMap.get(pk.c + '|' + pk.r);
       if (pen) frameGrabberSourcePens.set(b.id, pen);
     }
     for (const b of grabbersByPriority) {
@@ -7492,9 +7582,10 @@ G.Factory = (function () {
             w.goal = { x: more.gx, y: more.gy };
             more._claim = { id: d.id, t: S.playTime };
             if (Math.hypot(more.gx - w.gx, more.gy - w.gy) <= (C.LABOR_REACH || 0.7)) {
-              more._dead = true; more._claim = null;
-              const mi = S.cargo.indexOf(more); if (mi >= 0) S.cargo.splice(mi, 1);
-              addLaborCargo(d, more.data);
+              more._claim = null;
+              const picked = takeCargoUnit(more);
+              if (more._dead) { const mi = S.cargo.indexOf(more); if (mi >= 0) S.cargo.splice(mi, 1); }
+              if (picked) addLaborCargo(d, picked);
               playWorldSfx('click', w.gx, w.gy);
             }
             return;
@@ -7547,14 +7638,16 @@ G.Factory = (function () {
         consumed.push(tgt);
         d.carry = { kind: 'creature', data: tgt.data };
       } else {                               // 바닥 화물 줍기
-        const i = S.cargo.indexOf(tgt); if (i >= 0) S.cargo.splice(i, 1);
-        addLaborCargo(d, tgt.data);
+        const picked = takeCargoUnit(tgt);
+        if (tgt._dead) { const i = S.cargo.indexOf(tgt); if (i >= 0) S.cargo.splice(i, 1); }
+        if (picked) addLaborCargo(d, picked);
         while (laborCarryCount(d) < laborCarryCap(d)) {
           const extra = nearestFloorCargo(w);
           if (!extra || Math.hypot(extra.gx - w.gx, extra.gy - w.gy) > (C.LABOR_REACH || 0.7)) break;
-          extra._dead = true; extra._claim = null;
-          const ei = S.cargo.indexOf(extra); if (ei >= 0) S.cargo.splice(ei, 1);
-          addLaborCargo(d, extra.data);
+          extra._claim = null;
+          const extraPicked = takeCargoUnit(extra);
+          if (extra._dead) { const ei = S.cargo.indexOf(extra); if (ei >= 0) S.cargo.splice(ei, 1); }
+          if (extraPicked) addLaborCargo(d, extraPicked);
         }
       }
       w.laborTgt = null; w.goal = null;
@@ -7991,7 +8084,7 @@ G.Factory = (function () {
   // 출산대 위치를 덮는 레드포인터가 있으면 출산 가속 배수
   function birthBoost(b) {
     const cx = b.col + b.w / 2, cy = b.row + b.h / 2;
-    for (const p of frameCache.birthZones) if (inRect(rangeRect(p.type, p.col, p.row, p.dir), cx, cy)) return (C.BIRTH_BOOST || 1) * electricMult(p);
+    for (const z of frameCache.birthZoneRects) if (inRect(z.rect, cx, cy)) return (C.BIRTH_BOOST || 1) * electricMult(z.b);
     return 1;
   }
 
@@ -8658,7 +8751,12 @@ G.Factory = (function () {
         const cargoPool = cargoCell.map(cg => cg.data);
         let found = null;
         for (const cg of cargoCell) if (matchItem(b, cg.data, cargoPool)) { found = cg; break; }
-        if (found) { b.holding = found.data; found._dead = true; S.cargo = S.cargo.filter(x => x !== found); b.cd = 0; b.powerActivityT = Math.max(0.25, grabberInterval(b)); }
+        if (found) {
+          const picked = takeCargoUnit(found);
+          if (picked) b.holding = picked;
+          if (found._dead) S.cargo = S.cargo.filter(x => x !== found);
+          b.cd = 0; b.powerActivityT = Math.max(0.25, grabberInterval(b));
+        }
         else {
           // 노동석은 집게/긴팔집게에 잡히지 않음
           const wanderCell = nearbyWanderers(pk.c + 0.5, pk.r + 0.5, 1).filter(w => !w._dead && !w.data.labor && Math.floor(w.gx) === pk.c && Math.floor(w.gy) === pk.r);
@@ -9157,7 +9255,7 @@ G.Factory = (function () {
       if (!G.CREATURES[cg.data.type] || !isOwnedCell(Math.floor(cg.gx), Math.floor(cg.gy))) continue;
       const d = hitCreatureSprite(cg.data.type, cg.gx, cg.gy, gx, gy);
       if (d == null) continue;
-      if (d < bd) { bd = d; best = { data: cg.data, fgx: cg.gx, fgy: cg.gy, remove: () => { cg._dead = true; S.cargo = S.cargo.filter(x => x !== cg); } }; }
+      if (d < bd) { bd = d; best = { data: cg.data, fgx: cg.gx, fgy: cg.gy, remove: () => { takeCargoUnit(cg); if (cg._dead) S.cargo = S.cargo.filter(x => x !== cg); } }; }
     }
     return best;
   }
@@ -10719,6 +10817,7 @@ G.Factory = (function () {
 
   function drawCargo(cg) {
     const x = cg.gx * CELL, y = cg.gy * CELL, sz = 26 * ((C.DISPLAY_SCALE && C.DISPLAY_SCALE[cg.data.type]) || 1);
+    const stackN = cargoUnitCount(cg);
     const def = G.CREATURES[cg.data.type];   // 생물이면 def 존재
     if (def) {
       const v = DIR.vec[cg.dir] || { x: 1, y: 0 };
@@ -10736,6 +10835,21 @@ G.Factory = (function () {
         ctx.fillStyle = pd ? pd.color : '#fff'; ctx.fillRect(x - sz / 2, y - sz / 2, sz, sz);
         lbl((cg.data.type || '?')[0]);
       }
+    }
+    if (stackN > 1) {
+      const text = '(' + stackN.toLocaleString() + ')';
+      ctx.save();
+      ctx.font = 'bold 11px sans-serif';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'top';
+      const tx = x + 20, ty = y - 22, tw = ctx.measureText(text).width + 8;
+      ctx.fillStyle = 'rgba(0,0,0,0.72)';
+      ctx.fillRect(tx - tw, ty, tw, 15);
+      ctx.strokeStyle = 'rgba(255,220,120,0.85)';
+      ctx.strokeRect(tx - tw, ty, tw, 15);
+      ctx.fillStyle = '#ffe28a';
+      ctx.fillText(text, tx - 4, ty + 2);
+      ctx.restore();
     }
     function lbl(t) { ctx.fillStyle = 'rgba(0,0,0,0.65)'; ctx.font = '9px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(t, x, y); }
   }
@@ -11085,7 +11199,7 @@ G.Factory = (function () {
   function drawCrossbeltGhost() {
     if (!mouseCell && !crossbeltDragStart) return;
     const a = crossbeltDragStart || mouseCell;
-    const z = straightTransportEnd(a, mouseCell || a, 5);
+    const z = straightTransportEnd(a, mouseCell || a, CROSSBELT_MAX_DISTANCE);
     const validStart = isOwnedCell(a.col, a.row) && !occAt(a.col, a.row) && !hasBelt(a.col, a.row);
     const validEnd = isOwnedCell(z.col, z.row) && !occAt(z.col, z.row) && !hasBelt(z.col, z.row);
     const dir = chaosGateDir(a, z);
@@ -11256,5 +11370,5 @@ G.Factory = (function () {
   }
 
   function laborStatus() { return { count: S.wanderers.filter(w => w.data && w.data.labor).length, limit: laborLimit() }; }
-  return { init, update, render, reloadState, playOpeningIntro, screenToCell, tryLoadCreature, hoverDropTarget, clearDropHover, sellAllWarehouse, sellSomeType, sellPenCreatures, sellJissoFood, spawnWanderer, dropToFactory, dropFloorCargo, burstAt, stainAt, floatText, playSfxAt: playWorldSfx, triggerRaidCountdown, clearInvaders, endingCheat, chooseEnding, endingCinematicShot, endingCountdownFinale, endingCinematicTick, endingLaunchStart, endingLaunchFrame, finishStayEnding, researchPower, warehouseCount, playerInventoryCapacity, playerInventoryCount, playerInventoryRoom, laborStatus, powerUsageBreakdown, feedZoneMult, feedZoneInfo, pushOutOfFeeders, exportRuntimeState, importRuntimeState, refreshMenu, hotkeyBindings, hotkeyToolOptions, setBuildHotkey, questsForUI, acceptQuest, completeQuest, deliverQuest, questHasAny, marketMult, marketPct, forceTutorialGrowth, focusCameraOnGrid, tutorialGrowthLineConnected, landEnvironment, environmentAtPoint, environmentForBuilding, environmentEffectsForBuilding, hasOwnedEnvironment, recordUnchiProduced: n => { achievementStats().unchi += Math.max(0, n || 0); } };
+  return { init, update, updateCamera: updateCameraKeys, render, reloadState, playOpeningIntro, screenToCell, tryLoadCreature, hoverDropTarget, clearDropHover, sellAllWarehouse, sellSomeType, sellPenCreatures, sellJissoFood, spawnWanderer, dropToFactory, dropFloorCargo, burstAt, stainAt, floatText, playSfxAt: playWorldSfx, triggerRaidCountdown, clearInvaders, endingCheat, chooseEnding, endingCinematicShot, endingCountdownFinale, endingCinematicTick, endingLaunchStart, endingLaunchFrame, finishStayEnding, researchPower, warehouseCount, playerInventoryCapacity, playerInventoryCount, playerInventoryRoom, laborStatus, powerUsageBreakdown, feedZoneMult, feedZoneInfo, pushOutOfFeeders, exportRuntimeState, importRuntimeState, refreshMenu, hotkeyBindings, hotkeyToolOptions, setBuildHotkey, questsForUI, acceptQuest, completeQuest, deliverQuest, questHasAny, marketMult, marketPct, forceTutorialGrowth, focusCameraOnGrid, tutorialGrowthLineConnected, landEnvironment, environmentAtPoint, environmentForBuilding, environmentEffectsForBuilding, hasOwnedEnvironment, recordUnchiProduced: n => { achievementStats().unchi += Math.max(0, n || 0); } };
 })();

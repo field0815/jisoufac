@@ -107,7 +107,7 @@ G.CONFIG = {
   CLEAN_QUALITY_RATE: 0.005,       // 청결한 우리 초당 육질 +1 확률(=10초당 0.05)
   CLEAN_POLLUTION_MAX: 30,         // 이 오염도% 미만이면 '청결' 버프 적용
   UNCHI_GROWTH_MULT: 1.1,          // 운치를 먹으면 성장 속도 ×1.1
-  FOOD_HP_RECOVER: 4,              // 실장푸드/짓소산 푸드 섭취 시 초당 체력 회복량
+  FOOD_HP_RECOVER: 4,              // 실장푸드/짓소산·우마이·다이어트 푸드 섭취 시 초당 체력 회복량
   JISSO_FOOD_PRICE: 5,             // 짓소산 푸드 판매가(개당)
   CATCH_INTERVAL: 1.0,      // 포획기: 수거 주기(초)
   CATCH_ARM_SPEED: 14,      // 포획기 집게팔 이동 속도(칸/초)
@@ -465,7 +465,7 @@ G.PRICE_DEFAULTS = {
 G.DEVICES = {
   belt:      { cat: 'logistics', name: '컨베이어 벨트', w: 1, h: 1, img: 'belt.png',      color: '#5a5f6a', rotatable: true,  desc: '대량 생산의 기초. 화물 운반에 사용된다. 드래그=경로대로 꺾임.' },
   guardbelt: { cat: 'logistics', name: '가드레일 벨트', w: 1, h: 1, img: 'belt.png',      color: '#4f778a', rotatable: true, unlock: '가드레일벨트', desc: '실장석이 정체되어도 밖으로 빠져나가지 않는 벨트.' },
-  crossbelt: { cat: 'logistics', name: '횡단 벨트',     w: 1, h: 1, img: 'crossbelt.png', color: '#6a6f7a', rotatable: true, unlock: '횡단벨트', desc: '드래그한 직선 방향으로 최대 5칸 떨어진 출구까지 화물을 즉시 보낸다. 출구가 막히면 입구에서 받지 않는다.' },
+  crossbelt: { cat: 'logistics', name: '횡단 벨트',     w: 1, h: 1, img: 'crossbelt.png', color: '#6a6f7a', rotatable: true, unlock: '횡단벨트', desc: '드래그한 직선 방향으로 최대 7칸 떨어진 출구까지 화물을 즉시 보낸다. 출구가 막히면 입구에서 받지 않는다.' },
   sorter:    { cat: 'logistics', name: '분류기',        w: 1, h: 2, img: 'sorter.png',    color: '#7a6a3a', rotatable: true,  desc: '2칸 분배기. 화살표(앞)로 출력. 무필터=교대, 필터=지정 칸으로 배출.' },
   grabber:   { cat: 'logistics', name: '집게',          w: 3, h: 1, img: 'grabber.png',   color: '#8a5a3a', rotatable: true, powerUse: 1, desc: '화물을 집어 반대편에 배치한다. 작동 중 전력 1을 사용한다.' },
   longgrabber: { cat: 'logistics', name: '긴팔 집게',    w: 5, h: 1, img: 'grabber.png', color: '#9a6a3a', rotatable: true, unlock: '긴팔집게', tier: 1, powerUse: 1, desc: '2칸 너머의 물체를 옮긴다. 작동 중 전력 1을 사용한다.' },

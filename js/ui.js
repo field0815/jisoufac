@@ -519,6 +519,7 @@ G.UI = (function () {
     { id: 'ending1', label: '🚀 엔딩 1단계: 물자 완성' },
     { id: 'ending2', label: '🚀 엔딩 2단계: 전력 완충' },
   ];
+  CHEATS.splice(CHEATS.findIndex(c => c.id === 'ending0'), 0, { id: 'togglefps', label: 'FPS 표시 켜기/끄기' });
   function doHiddenCheat() { toggleCheatMenu(); }
   function buildCheatMenu() {
     cheatEl = document.createElement('div');
@@ -585,6 +586,10 @@ G.UI = (function () {
     } else if (id === 'killinvaders') {
       const n = (G.Factory && G.Factory.clearInvaders) ? G.Factory.clearInvaders() : 0;
       flash('침입 실장석 ' + n + '마리 소멸');
+    } else if (id === 'togglefps') {
+      S.showFps = !S.showFps;
+      updateFpsDisplay(S.showFps ? 0 : null, true);
+      flash(S.showFps ? 'FPS 표시 ON' : 'FPS 표시 OFF');
     } else if (/^ending[012]$/.test(id)) {
       const stage = +id.slice(-1);
       if (G.Factory && G.Factory.endingCheat) G.Factory.endingCheat(stage);
@@ -1213,7 +1218,7 @@ G.UI = (function () {
     ] },
     'research:횡단벨트': { emotion: 'normal', lines: [
       "횡단벨트는 입구와 출구 사이를 건너뛰어 화물을 바로 보내는 장치야.",
-      "직선으로 최대 5칸까지 드래그해서 설치하면 돼.",
+      "직선으로 최대 7칸까지 드래그해서 설치하면 돼.",
       { text: "출구가 막히면 입구에서부터 화물을 받지 않으니까, 막힐 걱정도 덜하겠네.", emotion: 'laugh' },
     ] },
     'research:긴팔집게': { emotion: 'normal', lines: [
@@ -2503,8 +2508,22 @@ G.UI = (function () {
     renderTop();
   }
 
+  let fpsEl = null;
+  function updateFpsDisplay(fps, force) {
+    if (!fpsEl) {
+      fpsEl = document.createElement('div');
+      fpsEl.id = 'fps-counter';
+      fpsEl.style.cssText = 'position:absolute;left:calc(50% + 735px);top:6px;z-index:50;min-width:72px;padding:5px 8px;border:1px solid rgba(120,170,220,.55);background:rgba(8,12,18,.82);color:#9fe8ff;font:700 13px/1.1 monospace;text-align:right;pointer-events:none;border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,.35)';
+      document.body.appendChild(fpsEl);
+    }
+    fpsEl.style.display = S.showFps ? 'block' : 'none';
+    if (!S.showFps) return;
+    if (force || fps != null) fpsEl.textContent = 'FPS ' + Math.round(fps || 0);
+  }
+
   return {
     init, switchScreen, showCreatureInfo, hideInfo, renderOverlay, renderTop, flash, notify, afterStateLoad,
+    updateFpsDisplay,
     markTutorialAction, midoriRadio, showRadio, showEndingConfirm, showEndingChoice, showEndingSubChoice, runEndingCinematic, isBasicTutorialActive, tutorialGuide,
     resumeSimulation: () => { G.paused = false; G.dialogPaused = false; G.openingPaused = false; updatePauseIndicator(); },
     onTutorialWildIntrusion, onTutorialRaidWarning, onResearchExplain, onReformerPowered,
