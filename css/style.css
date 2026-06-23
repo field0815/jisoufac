@@ -902,6 +902,36 @@ html, body {
   background: #20242e; border: 1px solid #5ad2e1; border-radius: 8px;
   padding: 8px; box-shadow: 0 4px 14px rgba(0,0,0,0.6);
 }
+
+/* 창고 / 콜로니센터 인벤토리 */
+.inventory-panel {
+  position: absolute; z-index: 470; top: 92px; width: 328px; max-height: calc(100% - 190px);
+  display: flex; flex-direction: column; background: #1c2029; border: 1px solid #52647d;
+  border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.65); color: #dfe8f3; padding: 9px;
+}
+.inventory-left { left: 12px; }
+.inventory-right { right: 12px; }
+.inventory-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.inventory-head b { font-size: 14px; color: #f0f5fb; }
+.inventory-head button { width: 25px; height: 25px; background: #292f3b; border: 1px solid #465064; color: #dce5ef; border-radius: 5px; cursor: pointer; }
+.inventory-summary { color: #96a5b8; font-size: 11px; margin-bottom: 7px; }
+.inventory-items { display: grid; grid-template-columns: repeat(4, 68px); grid-auto-rows: 68px; gap: 6px; overflow-y: auto; min-height: 74px; padding: 4px; background: #11151c; border: 1px solid #343c49; }
+.inventory-item { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; width: 68px; height: 68px; min-width: 0; padding: 4px; box-sizing: border-box; background: #272c37; border: 1px solid #4a5567; border-radius: 4px; cursor: grab; font-size: 10px; }
+.inventory-item:hover { background: #323947; border-color: #68758a; }
+.inventory-item:active { cursor: grabbing; }
+.inventory-item .di-item-icon { width: 30px; height: 30px; flex-shrink: 0; }
+.inventory-item span { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; color: #cdd7e3; }
+.inventory-item b { position: absolute; right: 4px; bottom: 3px; color: #ffe27a; font-size: 11px; text-shadow: 0 1px 2px #000; }
+.inventory-empty-slot { width: 68px; height: 68px; box-sizing: border-box; background: rgba(30,35,44,0.55); border: 1px solid #2d3542; border-radius: 4px; }
+.inventory-empty { grid-column: 1 / -1; color: #778397; text-align: center; padding: 18px 4px; font-size: 12px; }
+.inventory-upgrade { margin-top: 8px; background: #343b49; border: 1px solid #65738a; color: #e7edf5; border-radius: 6px; padding: 7px; cursor: pointer; }
+.inventory-upgrade:hover { background: #424b5c; }
+@media (max-width: 760px) {
+  .inventory-panel { width: min(270px, calc(100% - 24px)); max-height: 40%; }
+  .inventory-items { grid-template-columns: repeat(3, 68px); }
+  .inventory-left { top: 64px; }
+  .inventory-right { top: auto; bottom: 112px; }
+}
 .lb-carry { font-size: 11px; color: #9fe8f2; margin: 3px 0 6px; }
 .lb-modes { display: flex; gap: 3px; margin-bottom: 7px; }
 .lb-mode { flex: 1; background: #2a2e3a; border: 1px solid #444b5e; color: #cdd; border-radius: 5px; padding: 5px 2px; cursor: pointer; font-size: 12px; }
