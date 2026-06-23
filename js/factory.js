@@ -3231,12 +3231,26 @@ G.Factory = (function () {
     if (!data || !G.CREATURES[data.type]) return;
     const fi = feedZoneInfo(gx, gy);
     let growthSeconds = dt;
-    if ((fi.mult || 1) <= 1) {
+    data._vitalInfo = {
+      feedType: fi.type || '실장푸드',
+      feedSource: fi.inZone ? 'global' : 'none',
+      fedRatio: 0,
+      hpRecover: 0,
+      hpDrain: 0,
+      happyUp: 0,
+      happyDown: 0,
+      pollution: 0,
+    };
+    if (!fi.inZone) {
       if (G.Creatures.feedGrowth(data, growthSeconds)) playWorldSfx('grow', gx, gy);
       return;
     }
     const need = (C.FOOD_RATE[data.type] || 0) * fi.mult / 60 * dt;
     const ratio = takeFeedResource(fi.type || '실장푸드', need);
+    data._vitalInfo.fedRatio = ratio;
+    if ((fi.type === '실장푸드' || fi.type === '짓소산 푸드' || fi.type === '우마이푸드' || fi.type === '다이어트푸드') && ratio > 0) {
+      data._vitalInfo.hpRecover = (C.FOOD_HP_RECOVER || 4) * ratio;
+    }
     if (fi.type === '실장푸드' || fi.type === '짓소산 푸드') {
       if (ratio > 0) {
         growthSeconds = Math.max(growthSeconds, dt * ratio * fi.mult);
@@ -3258,6 +3272,7 @@ G.Factory = (function () {
       growthSeconds = Math.max(growthSeconds, dt * ratio * (C.UMAI_GROWTH_MULT || 3));
       G.Creatures.recoverHp(data, (C.FOOD_HP_RECOVER || 4) * dt * ratio);
       G.Creatures.changeHappy(data, (C.UMAI_HAPPY_RATE || 0.3) * dt * ratio);
+      data._vitalInfo.happyUp += (C.UMAI_HAPPY_RATE || 0.3) * ratio;
     }
     if (fi.type === '다이어트푸드') {   // 체력 회복 + 성장 최대 0.5배로 억제
       if (ratio > 0) {
@@ -6358,13 +6373,30 @@ G.Factory = (function () {
     const consumed = [];
     for (const w of S.wanderers) {
       if (w._dead) continue;   // 같은 프레임에 노동석이 회수/처치한 개체
-      const envEffects = (environmentAtPoint(w.gx, w.gy).effects || {});
+      if (w.data && G.CREATURES[w.data.type] && w.data.hp != null && w.data.hp <= 0 && !w.endingCinematic) {
+        finishWandererDeath(w, null, true);
+        continue;
+      }
+      const env = environmentAtPoint(w.gx, w.gy);
+      const envEffects = (env.effects || {});
+      if ((w.raider || w.invade) && env.key === 'redzone') {
+        w.redzoneT = (w.redzoneT || 0) + dt;
+        if (w.redzoneT >= 180 && G.CREATURES[w.data.type]) {
+          G.Creatures.ensureVitals(w.data);
+          w.data.hp = Math.max(0, (w.data.hp || 0) - (C.REDZONE_INVADER_HP_DRAIN || 3) * dt);
+          if (w.data.hp <= 0) {
+            finishWandererDeath(w, null, true);
+            continue;
+          }
+        }
+      } else {
+        w.redzoneT = 0;
+      }
       if (envEffects.healthDrain && G.CREATURES[w.data.type]) {
         G.Creatures.ensureVitals(w.data);
         w.data.hp = Math.max(0, (w.data.hp || 0) - envEffects.healthDrain * dt);
         if (w.data.hp <= 0) {
-          w._dead = true;
-          S.cargo.push(makeCargo(G.Creatures.makeProduct('분쇄육', { stats: w.data.stats || {} }), Math.floor(w.gx), Math.floor(w.gy)));
+          finishWandererDeath(w, null, true);
           continue;
         }
       }
@@ -6377,8 +6409,7 @@ G.Factory = (function () {
       if (w.data.happyCircuit) {
         G.Creatures.tickHappyCircuit(w.data, dt);
         if ((w.data.hp || 0) <= 0) {
-          w._dead = true;
-          S.cargo.push(makeCargo(G.Creatures.makeProduct('분쇄육', { stats: w.data.stats || {} }), Math.floor(w.gx), Math.floor(w.gy)));
+          finishWandererDeath(w, null, true);
           continue;
         }
       }
@@ -6499,8 +6530,8 @@ G.Factory = (function () {
     if (consumed.length) {
       const rm = new Set(consumed);
       for (const cw of rm) cw._dead = true;   // 다른 노동석의 목표 무효화
-      S.wanderers = S.wanderers.filter(w => !rm.has(w));
     }
+    S.wanderers = S.wanderers.filter(w => !w._dead);
     separateWanderers();
   }
   // 배회 개체 충돌 분리(서로 겹치지 않게 밀어냄)
@@ -7314,17 +7345,14 @@ G.Factory = (function () {
     } else damageWanderer(best, turretDmg(b), b, '#ffd24a');
   }
 
-  function damageWanderer(w, dmg, source, color) {
-    if (!w || w._dead || w.endingCinematic) return false;
-    G.Creatures.ensureVitals(w.data);
-    w.data.hp -= dmg;
-    spawnParticle(w.gx * CELL, w.gy * CELL, color || '#ffd24a');
-    if (w.data.hp > 0) return false;
+  function finishWandererDeath(w, source, minced) {
+    if (!w || w._dead) return false;
     w._dead = true;
-    S.wanderers = S.wanderers.filter(x => x !== w);
     burstAt(w.gx, w.gy); stainAt(w.gx, w.gy);
     if (source && isChaosTurret(source)) {
       S.cargo.push(makeCargo(resourceCargoData('운치'), Math.floor(w.gx), Math.floor(w.gy)));
+    } else if (minced) {
+      S.cargo.push(makeCargo(G.Creatures.makeProduct('분쇄육', { stats: (w.data && w.data.stats) || {} }), Math.floor(w.gx), Math.floor(w.gy)));
     } else {
       const meat = G.Creatures.makeProduct('실장육', w.data);
       if (w.raider || w.invade) meat.raidMeat = true;
@@ -7333,6 +7361,17 @@ G.Factory = (function () {
     if (source) source.kills = (source.kills || 0) + 1;
     playWorldSfx('remove', w.gx, w.gy);
     return true;
+  }
+
+  function damageWanderer(w, dmg, source, color) {
+    if (!w || w._dead || w.endingCinematic) return false;
+    G.Creatures.ensureVitals(w.data);
+    w.data.hp -= dmg;
+    spawnParticle(w.gx * CELL, w.gy * CELL, color || '#ffd24a');
+    if (w.data.hp > 0) return false;
+    const killed = finishWandererDeath(w, source, false);
+    if (killed) S.wanderers = S.wanderers.filter(x => x !== w);
+    return killed;
   }
 
   function spawnExplosionEffect(gx, gy, scale) {
@@ -7667,7 +7706,7 @@ G.Factory = (function () {
   function laborDefend(w, dt, consumed) {
     let tgt = null, bd = C.LABOR_SIGHT || 60;
     for (const t of nearbyWanderers(w.gx, w.gy, bd)) {
-      if (t._dead || !t.raider) continue;
+      if (t._dead || !(t.raider || t.invade)) continue;
       const dist = Math.hypot(t.gx - w.gx, t.gy - w.gy);
       if (dist < bd) { bd = dist; tgt = t; }
     }
@@ -7682,11 +7721,9 @@ G.Factory = (function () {
         tgt.data.hp -= (C.LABOR_ATK || 8) * laborUpgradeMult();
         spawnParticle(tgt.gx * CELL, tgt.gy * CELL, '#ff8a6a');
         if (tgt.data.hp <= 0) {
-          tgt._dead = true; consumed.push(tgt);
-          burstAt(tgt.gx, tgt.gy); stainAt(tgt.gx, tgt.gy);
-          S.cargo.push(makeCargo(G.Creatures.makeProduct('실장육', tgt.data), Math.floor(tgt.gx), Math.floor(tgt.gy)));
+          finishWandererDeath(tgt, null, false);
+          consumed.push(tgt);
           w.data.speech = '침입자 퇴치인데스!'; w.data.speechT = 2.0;
-          playWorldSfx('remove', tgt.gx, tgt.gy);
         }
       }
     }
@@ -10911,8 +10948,19 @@ G.Factory = (function () {
     queueCreatureBadge(m.cx, m.cy, w.data);
     // 정식 레이드 개체만 머리 위에 해골 표시
     if (w.formalRaid && !w._dead && !w.endingCinematic) {
-      ctx.font = '15px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText('💀', m.cx, m.top - 24);
+      const skullY = m.top - 27;
+      ctx.save();
+      ctx.fillStyle = 'rgba(120,0,0,0.78)';
+      ctx.strokeStyle = 'rgba(255,230,160,0.95)';
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(m.cx, skullY, 13, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.font = 'bold 19px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(0,0,0,0.9)';
+      ctx.strokeText('💀', m.cx, skullY);
+      ctx.fillStyle = '#fff7cf';
+      ctx.fillText('💀', m.cx, skullY);
+      ctx.restore();
     }
     // 침입 표식 (성체는 단계 표시)
     if (w.invade) {
@@ -10992,14 +11040,24 @@ G.Factory = (function () {
     const sx = clamp(target.x, vx0 + 1, vx1 - 1) * CELL, sy = clamp(target.y, vy0 + 1, vy1 - 1) * CELL;
     const pulse = 0.55 + 0.45 * Math.abs(Math.sin(Date.now() / 240));
     ctx.save();
-    ctx.globalAlpha = pulse;
-    ctx.fillStyle = 'rgba(180,20,20,0.55)'; ctx.beginPath(); ctx.arc(sx, sy, 24, 0, Math.PI * 2); ctx.fill();
-    ctx.globalAlpha = Math.min(1, pulse + 0.2);
-    ctx.font = 'bold 34px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#fff'; ctx.fillText('☠', sx, sy);
+    ctx.globalAlpha = 0.7 + pulse * 0.3;
+    ctx.fillStyle = 'rgba(150,0,0,0.82)';
+    ctx.beginPath(); ctx.arc(sx, sy, 40, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,220,120,0.95)';
+    ctx.lineWidth = 5;
+    ctx.stroke();
+    ctx.globalAlpha = Math.min(1, pulse + 0.25);
+    ctx.font = 'bold 54px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.lineWidth = 7;
+    ctx.strokeStyle = 'rgba(0,0,0,0.92)';
+    ctx.strokeText('☠', sx, sy - 1);
+    ctx.fillStyle = '#fff7cf'; ctx.fillText('☠', sx, sy - 1);
     if (countdown) {
-      ctx.globalAlpha = 1; ctx.fillStyle = '#ffd0c0'; ctx.font = 'bold 12px sans-serif';
-      ctx.fillText(Math.ceil(S.raidIn) + '초', sx, sy + 30);
+      ctx.globalAlpha = 1; ctx.fillStyle = '#ffd0c0'; ctx.font = 'bold 16px sans-serif';
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+      ctx.strokeText(Math.ceil(S.raidIn) + '초', sx, sy + 47);
+      ctx.fillText(Math.ceil(S.raidIn) + '초', sx, sy + 47);
     }
     ctx.restore();
   }

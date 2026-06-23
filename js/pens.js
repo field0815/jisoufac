@@ -252,6 +252,16 @@ G.Pens = (function () {
         // 기본 성장은 사료가 없어도 진행. 사료를 실제로 먹으면 종류별 성장 배수/부가효과가 붙음.
         const isUnchi = c._feedSource === 'pen' || c._feedType === '운치';
         const ft = c._feedType;
+        c._vitalInfo = {
+          feedType: ft || '실장푸드',
+          feedSource: c._feedSource || 'global',
+          fedRatio: fed,
+          hpRecover: (ft === '실장푸드' || ft === '짓소산 푸드' || ft === '우마이푸드' || ft === '다이어트푸드') && c._feedSource !== 'pen' && fed > 0 ? (C.FOOD_HP_RECOVER || 4) * fed : 0,
+          hpDrain: (effects.healthDrain || 0) + (c.happyCircuit ? (C.HAPPY_CIRCUIT_HP_DRAIN || 8) : 0),
+          happyUp: (ft === '우마이푸드' && fed > 0 ? (C.UMAI_HAPPY_RATE || 0.3) * fed : 0) + (effects.penHappyRecovery ? 0.05 * effects.penHappyRecovery : 0),
+          happyDown: (c.type === '독라' || c.type === '새끼독라') ? 0.2 : 0,
+          pollution,
+        };
         const growsViaFeed = isUnchi || ft === '실장푸드' || ft === '짓소산 푸드' || ft === '우마이푸드' || ft === '다이어트푸드';
         let growthSeconds = dt;
         if (growsViaFeed && fed > 0) {
@@ -299,7 +309,7 @@ G.Pens = (function () {
         // 운치(똥/자원) 섭취 → 2% 확률 행복 하락(0이면 행복회로)
         if (isUnchi && fed > 0 && Math.random() < (C.UNCHI_HAPPY_DOWN_CHANCE || 0.02) * dt * fed) G.Creatures.changeHappy(c, -1);
         // 실장푸드/짓소산 푸드/다이어트푸드 섭취 → 체력 회복
-        if ((c._feedType === '실장푸드' || c._feedType === '짓소산 푸드' || c._feedType === '다이어트푸드') && c._feedSource !== 'pen' && fed > 0) G.Creatures.recoverHp(c, (C.FOOD_HP_RECOVER || 4) * dt * fed);
+        if ((c._feedType === '실장푸드' || c._feedType === '짓소산 푸드' || c._feedType === '우마이푸드' || c._feedType === '다이어트푸드') && c._feedSource !== 'pen' && fed > 0) G.Creatures.recoverHp(c, (C.FOOD_HP_RECOVER || 4) * dt * fed);
         // 오염도가 높을수록 육질이 떨어질 확률↑. 오염으로 육질이 0이 되면 분쇄육이 된다.
         if (c.stats && pollution > 0 && (c.stats.육질 || 0) > 0 &&
             Math.random() < (C.POLLUTION_QUALITY_DOWN || 0.06) * dt * (pollution / 100)) {

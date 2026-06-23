@@ -1769,6 +1769,29 @@ G.UI = (function () {
 
   /* ---- 정보창 -------------------------------------------------------- */
   let infoEl;
+  function vitalTipHtml(c, kind, maxValue) {
+    const v = c._vitalInfo || {};
+    const lines = [];
+    const feedName = v.feedType || c._feedType || '없음';
+    const fed = v.fedRatio == null ? null : Math.round(v.fedRatio * 100);
+    if (kind === 'hp') {
+      const up = +(v.hpRecover || 0);
+      const down = +(v.hpDrain || 0);
+      if (up > 0) lines.push(`+${up.toFixed(2)}/초 · ${feedName} 체력 회복${fed != null ? ` (${fed}%)` : ''}`);
+      else if (v.feedSource === 'global') lines.push(`+0/초 · ${feedName} 부족 또는 배급 미도달${fed != null ? ` (${fed}%)` : ''}`);
+      if (down > 0) lines.push(`-${down.toFixed(2)}/초 · 환경/행복회로 체력 감소`);
+      if (up > 0 && c.hp >= maxValue) lines.push('현재 최대 체력이라 더 오르지 않음');
+      if (!lines.length) lines.push('현재 체력 증감 없음');
+    } else {
+      const up = +(v.happyUp || 0);
+      const down = +(v.happyDown || 0);
+      if (up > 0) lines.push(`+${up.toFixed(2)}/초 · ${feedName}/환경 행복 회복`);
+      if (down > 0) lines.push(`-${down.toFixed(2)}/초 · 독라/상태 효과 행복 감소`);
+      if (c.happyCircuit) lines.push('행복회로: 체력을 행복으로 전환 중');
+      if (!lines.length) lines.push('현재 행복 증감 없음');
+    }
+    return `<span class="ci-tip">${lines.map(escHtml).join('<br>')}</span>`;
+  }
   function showCreatureInfo(c, x, y) {
     if (!infoEl) {
       infoEl = document.createElement('div'); infoEl.className = 'creature-info';
@@ -1785,8 +1808,9 @@ G.UI = (function () {
     const gradeRow = grd ? `<div class="ci-row"><span>등급</span><b style="color:${grd.color}">${grd.label}</b></div>` : '';
     if (G.Creatures.ensureVitals) G.Creatures.ensureVitals(c);
     const hpMax = G.Creatures.hpMaxOf ? G.Creatures.hpMaxOf(c) : Math.floor(c.stats.크기 || 1);
-    const hpRow = `<div class="ci-row"><span>체력</span><b>${Math.floor(c.hp != null ? c.hp : hpMax)}/${hpMax}</b></div>`;
-    const happyRow = `<div class="ci-row"><span>행복</span><b>${Math.floor(c.행복 != null ? c.행복 : 100)}/${G.CONFIG.CREATURE_HAPPY_MAX || 100}</b></div>`;
+    const hpRow = `<div class="ci-row ci-vital"><span>체력</span><b>${Math.floor(c.hp != null ? c.hp : hpMax)}/${hpMax}</b>${vitalTipHtml(c, 'hp', hpMax)}</div>`;
+    const happyMax = G.CONFIG.CREATURE_HAPPY_MAX || 100;
+    const happyRow = `<div class="ci-row ci-vital"><span>행복</span><b>${Math.floor(c.행복 != null ? c.행복 : 100)}/${happyMax}</b>${vitalTipHtml(c, 'happy', happyMax)}</div>`;
     infoEl.innerHTML = `
       <div class="ci-head" style="border-color:${def.color}">#${c.id} · ${def.label}</div>
       ${gradeRow}
