@@ -33,6 +33,7 @@ window.G = window.G || {};
 
     // 옵션
     audio: { bgm: 0.35, sfx: 1 },
+    autoSave: true,
     weather: { rollIn: C.WEATHER_ROLL_SEC || 60, rainLeft: 0 },
     linggal: true,    // 링갈 ON/OFF — OFF면 실장석이 단순 대사만 함
 
@@ -167,6 +168,7 @@ window.G = window.G || {};
     if (!base.ambientInvaderTimers || typeof base.ambientInvaderTimers !== 'object') base.ambientInvaderTimers = {};
     if (!base.environmentResidentsSeeded || typeof base.environmentResidentsSeeded !== 'object') base.environmentResidentsSeeded = {};
     if (!base.soldValueByType || typeof base.soldValueByType !== 'object') base.soldValueByType = {};
+    if (!Array.isArray(base.produceLog) || base.produceLog.length > 2000) base.produceLog = [];
     base.achievementStats = Object.assign(freshState().achievementStats, base.achievementStats || {});
     if (!base.achievementStats.productTypes || typeof base.achievementStats.productTypes !== 'object') base.achievementStats.productTypes = {};
     if (!base.monumentsUnlocked || typeof base.monumentsUnlocked !== 'object') base.monumentsUnlocked = {};
@@ -188,6 +190,7 @@ window.G = window.G || {};
       wildShown: false, wildMoved: false, raidWarnShown: false, turretResponseShown: false,
     }, base.tutorial.conditional || {});
     base.audio = Object.assign({ bgm: 0.35, sfx: 1 }, base.audio || {});
+    if (typeof base.autoSave !== 'boolean') base.autoSave = true;
     if (typeof base.linggal !== 'boolean') base.linggal = true;
     base.umaiFood = Math.max(0, base.umaiFood || 0);
     base.dietFood = Math.max(0, base.dietFood || 0);
@@ -226,16 +229,14 @@ window.G = window.G || {};
         if (!b.inventory || typeof b.inventory !== 'object') b.inventory = {};
         b.storageLevel = Math.max(0, Math.floor(b.storageLevel || 0));
         for (const type of Object.keys(b.inventory)) {
-          const normalized = [];
-          for (const data of (Array.isArray(b.inventory[type]) ? b.inventory[type] : [])) {
-            const units = Math.max(1, Math.floor((data && data.amount) || 1));
-            for (let i = 0; i < units; i++) normalized.push(Object.assign({}, data, {
-              id: i === 0 && data.id != null ? data.id : base.nextId++,
-              amount: 1,
-              stats: data && data.stats ? Object.assign({}, data.stats) : { 크기: 0 },
-            }));
+          const list = Array.isArray(b.inventory[type]) ? b.inventory[type].filter(Boolean) : [];
+          // amount 스택 보존(개별 폭발 금지). 합치기는 factory.compactWarehouses가 처리.
+          for (const data of list) {
+            data.amount = Math.max(1, Math.floor(data.amount || 1));
+            if (data.id == null) data.id = base.nextId++;
+            if (!data.stats || typeof data.stats !== 'object') data.stats = { 크기: 0 };
           }
-          b.inventory[type] = normalized;
+          b.inventory[type] = list;
         }
       }
     }
@@ -248,7 +249,7 @@ window.G = window.G || {};
 
   // 벽: 레거시 세이브의 true=가득 → HP 값으로 변환. 잘못된 값은 제거.
   function normalizeWalls(base) {
-    const max = (C && C.WALL_HP) || 50;
+    const max = ((C && C.WALL_HP) || 50) * Math.pow(2, Math.max(0, base.wallLevel || 0));
     const walls = base.walls;
     if (!walls || typeof walls !== 'object') { base.walls = {}; return; }
     for (const k in walls) {
@@ -256,6 +257,13 @@ window.G = window.G || {};
       if (v === true) walls[k] = max;
       else if (typeof v === 'number' && v > 0) walls[k] = Math.min(max, v);
       else delete walls[k];
+    }
+    const doors = base.doors;
+    if (!doors || typeof doors !== 'object') { base.doors = {}; return; }
+    for (const k in doors) {
+      const d = doors[k];
+      if (!d || typeof d !== 'object') { delete doors[k]; continue; }
+      d.hp = d.hp == null ? max : Math.min(max, Math.max(1, +d.hp || 0));
     }
   }
 
@@ -315,17 +323,39 @@ window.G = window.G || {};
     const SLOTS = 4;
     let lastError = '';
     function slotKey(n) { return KEY + '_slot' + n; }
+    function metaKey(key) { return key + '_meta'; }
     function fail(message, e) {
       lastError = message || '저장 처리 실패';
       if (e && console && console.warn) console.warn('[Save]', lastError, e);
       return false;
     }
 
+    const SAVE_RUNTIME_KEYS = new Set([
+      '_vitalInfo', '_feedType', '_fedRatio', '_feedSource', '_feedMult',
+      '_claim', '_path', '_pathGoal', '_pathRetry', '_tgt', '_dead',
+      'speech', 'speechT', 'speechTone',
+    ]);
+    function stripRuntimeFields(v) {
+      if (!v || typeof v !== 'object') return;
+      if (Array.isArray(v)) { v.forEach(stripRuntimeFields); return; }
+      for (const k of Object.keys(v)) {
+        if (SAVE_RUNTIME_KEYS.has(k)) { delete v[k]; continue; }
+        stripRuntimeFields(v[k]);
+      }
+    }
+    function stateForSave() {
+      const s = clone(G.State);
+      stripRuntimeFields(s);
+      s.produceLog = [];
+      s.particles = [];
+      s.selection = [];
+      return s;
+    }
     function payload() {
       return {
         version: 1,
         savedAt: Date.now(),
-        state: clone(G.State),
+        state: stateForSave(),
         factoryRuntime: G.Factory && G.Factory.exportRuntimeState ? G.Factory.exportRuntimeState() : null,
       };
     }
@@ -350,7 +380,9 @@ window.G = window.G || {};
       if (G.State.endingSaveLocked && !force) return fail('엔딩 선택 이후에는 저장할 수 없습니다.');
       try {
         lastError = '';
-        localStorage.setItem(key, encode(payload()));
+        const data = payload();
+        localStorage.setItem(key, encode(data));
+        localStorage.setItem(metaKey(key), JSON.stringify({ savedAt: data.savedAt }));
         return true;
       } catch (e) {
         return fail(e && e.name === 'QuotaExceededError' ? '저장 공간 부족' : '저장 실패', e);
@@ -374,9 +406,11 @@ window.G = window.G || {};
       }
     }
     function savedAtOf(key) {
-      const raw = localStorage.getItem(key);
-      if (!raw) return null;
-      try { return decode(raw).savedAt || null; } catch (e) { return null; }
+      try {
+        const meta = JSON.parse(localStorage.getItem(metaKey(key)) || 'null');
+        if (meta && meta.savedAt) return meta.savedAt;
+      } catch (e) {}
+      return null;
     }
 
     // 자동저장 API (기존 호환)
@@ -386,6 +420,7 @@ window.G = window.G || {};
     function savedAt() { return savedAtOf(KEY); }
     function reset(opts) {
       localStorage.removeItem(KEY);
+      localStorage.removeItem(metaKey(KEY));
       G.resetRuntimeState(opts || {});
       if (G.Factory && G.Factory.importRuntimeState) G.Factory.importRuntimeState(null);
       if (G.Factory && G.Factory.reloadState) G.Factory.reloadState({ setupStart: true });
@@ -394,7 +429,7 @@ window.G = window.G || {};
     }
 
     // 슬롯 API (옵션창에서 수동 저장/로드). 슬롯 저장 시 자동저장에도 반영.
-    function saveSlot(n) { const ok = saveTo(slotKey(n)); if (ok) saveTo(KEY); return ok; }
+    function saveSlot(n) { const ok = saveTo(slotKey(n)); if (ok && G.State.autoSave !== false) saveTo(KEY); return ok; }
     function loadSlot(n) { return loadFrom(slotKey(n), false); }
     function hasSlot(n) { return !!localStorage.getItem(slotKey(n)); }
     function slotSavedAt(n) { return savedAtOf(slotKey(n)); }
@@ -406,15 +441,16 @@ window.G = window.G || {};
       if (G.State.endingSaveLocked) return fail('엔딩 선택 이후에는 저장 파일을 만들 수 없습니다.');
       try {
         lastError = '';
-        const data = JSON.stringify(payload());
-        const blob = new Blob([data], { type: 'application/json' });
+        const data = encode(payload());
+        const compressed = data.slice(0, LZ_PREFIX.length) === LZ_PREFIX;
+        const blob = new Blob([data], { type: compressed ? 'text/plain' : 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         const d = new Date();
         const p2 = n => ('0' + n).slice(-2);
         const ts = '' + d.getFullYear() + p2(d.getMonth() + 1) + p2(d.getDate()) + '_' + p2(d.getHours()) + p2(d.getMinutes());
         a.href = url;
-        a.download = 'siljang_save_' + ts + '.json';
+        a.download = 'siljang_save_' + ts + (compressed ? '.sjz' : '.json');
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -434,7 +470,8 @@ window.G = window.G || {};
       reader.onload = function () {
         try {
           lastError = '';
-          const data = JSON.parse(reader.result);
+          const raw = String(reader.result || '');
+          const data = raw.slice(0, LZ_PREFIX.length) === LZ_PREFIX ? decode(raw) : JSON.parse(raw);
           G.applySavedState(data.state || data);
           if (G.Factory && G.Factory.importRuntimeState) G.Factory.importRuntimeState(data.factoryRuntime || data.factory || null);
           if (G.Factory && G.Factory.reloadState) G.Factory.reloadState();

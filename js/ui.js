@@ -16,6 +16,8 @@ G.UI = (function () {
   let optionsTab = 'save';
   let optionsMessage = '';
   let lastSaveSlotSig = '';
+  let lastOptionsSig = '';
+  let lastHotkeySig = '';
   let resetArmedUntil = 0;
   let hiddenCheatCount = 0;
   let hiddenCheatTimer = 0;
@@ -802,6 +804,7 @@ G.UI = (function () {
         <button class="opt-tab" data-opt-tab="keys">단축키</button>
       </div>
       <div class="opt-pane" data-pane="save">
+        <label class="opt-check"><input type="checkbox" id="opt-autosave"> 자동저장</label>
         <div class="opt-slots" id="opt-slots"></div>
         <div class="opt-file-row">
           <button data-opt="export">📤 파일로 저장</button>
@@ -810,7 +813,7 @@ G.UI = (function () {
         <button data-opt="reset">초기화</button>
         <div class="opt-message" id="opt-message"></div>
         <div class="opt-save-time" id="opt-save-time"></div>
-        <input type="file" id="opt-import-input" accept="application/json,.json" style="display:none">
+        <input type="file" id="opt-import-input" accept="application/json,.json,.sjz,text/plain" style="display:none">
       </div>
       <div class="opt-pane" data-pane="audio">
         <label class="opt-slider">BGM <input type="range" min="0" max="100" step="1" data-volume="bgm"><b id="opt-bgm-val">0%</b></label>
@@ -874,13 +877,23 @@ G.UI = (function () {
   }
   function toggleOptions() {
     optionsEl.classList.toggle('open');
+    lastOptionsSig = '';
     renderOptions();
   }
   function closeOptions() { if (optionsEl) optionsEl.classList.remove('open'); }
   function renderOptions() {
     if (!optionsEl || !optionsEl.classList.contains('open')) return;
-    renderSaveSlots();
     const t = G.Save && G.Save.savedAt ? G.Save.savedAt() : null;
+    const audio = S.audio || (S.audio = { bgm: 0.35, sfx: 1 });
+    const sig = [
+      optionsTab, optionsMessage, t || 0,
+      Math.round((audio.bgm == null ? 0.35 : audio.bgm) * 100),
+      Math.round((audio.sfx == null ? 1 : audio.sfx) * 100),
+      S.autoSave === false ? 0 : 1,
+    ].join('|');
+    if (sig === lastOptionsSig) return;
+    lastOptionsSig = sig;
+    if (optionsTab === 'save') renderSaveSlots();
     const line = document.getElementById('opt-save-time');
     if (line) line.textContent = t ? ('최근 자동저장: ' + formatTime(t)) : '자동저장 없음';
     const msg = document.getElementById('opt-message');
@@ -891,20 +904,24 @@ G.UI = (function () {
     }
     optionsEl.querySelectorAll('.opt-tab').forEach(b => b.classList.toggle('active', b.dataset.optTab === optionsTab));
     optionsEl.querySelectorAll('.opt-pane').forEach(p => p.classList.toggle('active', p.dataset.pane === optionsTab));
-    const audio = S.audio || (S.audio = { bgm: 0.35, sfx: 1 });
     const bgm = optionsEl.querySelector('[data-volume="bgm"]');
     const sfx = optionsEl.querySelector('[data-volume="sfx"]');
+    const autosave = document.getElementById('opt-autosave');
+    if (autosave) autosave.checked = S.autoSave !== false;
     if (bgm) bgm.value = Math.round((audio.bgm == null ? 0.35 : audio.bgm) * 100);
     if (sfx) sfx.value = Math.round((audio.sfx == null ? 1 : audio.sfx) * 100);
     const bv = document.getElementById('opt-bgm-val'); if (bv && bgm) bv.textContent = bgm.value + '%';
     const sv = document.getElementById('opt-sfx-val'); if (sv && sfx) sv.textContent = sfx.value + '%';
-    renderHotkeyOptions();
+    if (optionsTab === 'keys') renderHotkeyOptions();
   }
   function renderHotkeyOptions() {
     const wrap = document.getElementById('opt-build-hotkeys');
     if (!wrap || !G.Factory || !G.Factory.hotkeyBindings || !G.Factory.hotkeyToolOptions) return;
     const bindings = G.Factory.hotkeyBindings();
     const tools = G.Factory.hotkeyToolOptions();
+    const sig = JSON.stringify(bindings) + '|' + tools.map(t => t.category + ':' + t.type + ':' + t.name).join('|');
+    if (sig === lastHotkeySig) return;
+    lastHotkeySig = sig;
     const grouped = {};
     for (const tool of tools) {
       if (!grouped[tool.category]) grouped[tool.category] = [];
@@ -919,6 +936,14 @@ G.UI = (function () {
     wrap.querySelectorAll('[data-build-hotkey]').forEach(select => { select.value = bindings[select.dataset.buildHotkey] || ''; });
   }
   function onOptionChange(e) {
+    if (e.target && e.target.id === 'opt-autosave') {
+      S.autoSave = !!e.target.checked;
+      lastOptionsSig = '';
+      optionsMessage = S.autoSave ? '자동저장 켜짐' : '자동저장 꺼짐';
+      renderOptions();
+      flash(optionsMessage);
+      return;
+    }
     const select = e.target.closest('select[data-build-hotkey]');
     if (!select || !G.Factory || !G.Factory.setBuildHotkey) return;
     const ok = G.Factory.setBuildHotkey(select.dataset.buildHotkey, select.value);
@@ -933,11 +958,12 @@ G.UI = (function () {
     let html = '';
     for (let i = 1; i <= n; i++) {
       const t = G.Save.slotSavedAt(i);
-      sig += i + ':' + (t || 0) + '|';
+      const exists = G.Save.hasSlot(i);
+      sig += i + ':' + (t || 0) + ':' + (exists ? 1 : 0) + '|';
       const info = t ? formatDateTime(t) : '';
       html += `<div class="opt-slot-row"><span class="opt-slot-name">슬롯 ${i}</span><span class="opt-slot-time">${info}</span>` +
         `<button data-slot-save="${i}">저장</button>` +
-        `<button data-slot-load="${i}" ${t ? '' : 'disabled'}>로드</button></div>`;
+        `<button data-slot-load="${i}" ${exists ? '' : 'disabled'}>로드</button></div>`;
     }
     if (sig === lastSaveSlotSig) return;
     lastSaveSlotSig = sig;
@@ -1481,10 +1507,12 @@ G.UI = (function () {
     });
     return best;
   }
+  // 창고 스택 유틸(factory.js와 동일 규칙: amount 합산)
+  function whUnitsOf(d) { return Math.max(1, Math.floor((d && d.amount) || 1)); }
+  function whListUnits(list) { if (!Array.isArray(list)) return 0; let n = 0; for (const d of list) n += whUnitsOf(d); return n; }
   function warehouseCount(type) {
     if (type === '운치') return Math.floor(S.unchi || 0);
-    const list = S.warehouse && S.warehouse[type];
-    return list && list.length ? list.length : 0;
+    return whListUnits(S.warehouse && S.warehouse[type]);
   }
   function totalCreatures() {
     let n = 0;
@@ -2090,21 +2118,24 @@ G.UI = (function () {
     return Object.keys(costs || {}).every(type => materialCount(type) >= costs[type]);
   }
   function materialCount(type) {
-    const list = S.warehouse && S.warehouse[type];
-    return Array.isArray(list) ? list.length : 0;
+    return whListUnits(S.warehouse && S.warehouse[type]);
   }
   function takeMaterial(type, count) {
     const list = S.warehouse && S.warehouse[type];
-    if (!Array.isArray(list) || list.length < count) return false;
-    list.splice(0, count);
+    if (whListUnits(list) < count) return false;
+    let need = count;
+    for (const d of list) { if (need <= 0) break; const have = whUnitsOf(d); const take = Math.min(have, need); d.amount = have - take; need -= take; }
+    for (let i = list.length - 1; i >= 0; i--) if (whUnitsOf(list[i]) <= 0) list.splice(i, 1);
     return true;
   }
   function returnMaterial(type, count) {
     if (!count) return;
     if (!S.warehouse[type]) S.warehouse[type] = [];
-    for (let i = 0; i < count; i++) S.warehouse[type].push({
-      id: G.uid(), type, isProduct: false, amount: 1, stats: { 크기: 0 },
-    });
+    const list = S.warehouse[type];
+    for (const d of list) {
+      if (d && d.type === type && !d.isProduct && (!d.stats || (d.stats.크기 || 0) === 0)) { d.amount = whUnitsOf(d) + count; return; }
+    }
+    list.push({ id: G.uid(), type, isProduct: false, amount: count, stats: { 크기: 0 } });
   }
   function researchProgressKey(r) {
     return r ? (r.key + '|' + (r.targetLevel || 0)) : '';
@@ -2268,27 +2299,29 @@ G.UI = (function () {
     const jissoHave = Math.floor(S.jissoFood || 0);
     const jissoUnit = C.JISSO_FOOD_PRICE || 5;
     let total = jissoHave * jissoUnit;
-    const whKeys = Object.keys(S.warehouse).filter(k => S.warehouse[k] && S.warehouse[k].length);
+    const whKeys = Object.keys(S.warehouse).filter(k => whListUnits(S.warehouse[k]) > 0);
     const unitOf = (k) => {
       const list = S.warehouse[k];
-      const base = list.reduce((s, d) => s + G.Creatures.cargoPrice(d), 0) / list.length;
+      let sum = 0, units = 0;
+      for (const d of list) { const u = whUnitsOf(d); sum += G.Creatures.cargoPrice(d) * u; units += u; }
+      const base = units ? sum / units : 0;
       return Math.max(1, Math.round(base * mMult(k)));
     };
-    whKeys.forEach(k => { total += unitOf(k) * S.warehouse[k].length; });
+    whKeys.forEach(k => { total += unitOf(k) * whListUnits(S.warehouse[k]); });
     document.getElementById('wh-value').textContent = total.toLocaleString();
-    const whSig = '짓소산 푸드:' + jissoHave + '|' + whKeys.map(k => k + ':' + S.warehouse[k].length + ':' + mPct(k)).join('|');
+    const whSig = '짓소산 푸드:' + jissoHave + '|' + whKeys.map(k => k + ':' + whListUnits(S.warehouse[k]) + ':' + mPct(k)).join('|');
     if (whSig !== lastWhSig) {
       lastWhSig = whSig;
       const jissoHtml = jissoHave > 0
         ? sellCardHtml(productIcon('짓소산 푸드', 'wh-icon'), '짓소산 푸드', jissoHave, jissoHave * jissoUnit, jissoUnit, '', sellButtonsHtml('jfsell'))
         : '';
       const whHtml = jissoHtml + whKeys.map(k => {
-        const list = S.warehouse[k];
+        const units = whListUnits(S.warehouse[k]);
         const unit = unitOf(k);
-        const val = unit * list.length;
+        const val = unit * units;
         const pct = mPct(k);
         const pctTxt = pct === 0 ? '' : ` <small class="mkt ${pct > 0 ? 'up' : 'down'}">${pct > 0 ? '+' : ''}${pct}%</small>`;
-        return sellCardHtml(itemIcon(k, 'wh-icon'), k, list.length, val, unit, pctTxt, sellButtonsHtml('sell', k));
+        return sellCardHtml(itemIcon(k, 'wh-icon'), k, units, val, unit, pctTxt, sellButtonsHtml('sell', k));
       }).join('');
       document.getElementById('warehouse-list').innerHTML = whHtml || '<div class="muted">판매할 재고 없음</div>';
     }
@@ -2374,7 +2407,7 @@ G.UI = (function () {
     add('다이어트푸드', S.dietFood);
     add('운치', S.unchi);
     add('조미료', S.seasoning);
-    Object.keys(S.warehouse || {}).forEach(k => add(k, S.warehouse[k] && S.warehouse[k].length));
+    Object.keys(S.warehouse || {}).forEach(k => add(k, whListUnits(S.warehouse[k])));
     return counts;
   }
   function renderInventoryStats() {

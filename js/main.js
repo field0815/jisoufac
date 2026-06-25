@@ -23,7 +23,7 @@
     }
 
     setInterval(() => {
-      if (G.Save) G.Save.save();
+      if (G.Save && G.State.autoSave !== false) G.Save.save();
     }, 60000);
 
     let last = performance.now();

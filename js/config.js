@@ -70,6 +70,7 @@ G.CONFIG = {
   GRABBER_INTERVAL: 1.0,
   BELT_SPEED: 1.1,
   BELT_CAP: 2,
+  FLOOR_CARGO_DECAY_SEC: 150,  // 벨트·장치에 닿지 않는 바닥 화물이 자연 소멸하기까지의 방치 시간(초)
   TUNNEL_TIME: 0.4,         // 터널 통과 시간(초)
   TUNNEL_CAP: 8,            // 터널 동시 수용
   CONSTRUCTION_TIME: { 0: 0, 1: 5, 2: 15, 3: 30 },
@@ -300,6 +301,7 @@ G.CONFIG = {
   MIX_FOOD: 50,             // 배합기: 분쇄육1 + 운치10 → 실장푸드 50
   MIX_UNCHI: 10,           // 배합기 실장푸드 1회 산출에 필요한 운치(=1묶음)
   MIX_FOOD_NEED: 50,        // 배합기 짓소산 푸드 산출에 필요한 실장푸드 수
+  MATERIAL_CAP: 100,        // 조리실/배합기/포장기에 비축 가능한 재료 종류별 최대 수량(초과분은 소진될 때까지 거부)
 
   // 배회 개체 속도 (칸/초): 성체 빠르고 어릴수록 느림
   WANDER_SPEED: { 성체실장: 1.6, 자실장: 1.1, 엄지: 0.8, 구더기: 0.5, 점액덩어리: 0.4, 독라: 1.5, 새끼독라: 1.0, 사육실장: 1.2, 새끼사육실장: 0.9 },
@@ -488,40 +490,40 @@ G.DEVICES = {
   washbasin:  { cat: 'processing', name: '세면대',   w: 2, h: 1, img: 'washbasin.png',  color: '#3a5a7a', rotatable: true, tier: 0, powerUse: 0, desc: '점액덩어리 세척→구더기/엄지/자실장(1/3). 구더기는 변환하지 않음. 일꾼 슬롯3.',
                 worker: true, accept: ['점액덩어리'], time: 3 },
   slaughter:  { cat: 'processing', name: '도축기',   w: 3, h: 3, img: 'slaughter.png',  color: '#a23a3a', rotatable: true, tier: 0, powerUse: 10, desc: '독라/새끼독라→실장육(크기10당 1개)+위석. 구더기·엄지→소형위석, 자실장→중형위석, 성체실장→대형위석. 일꾼 슬롯3.',
-                worker: true, accept: ['독라', '새끼독라', '구더기', '엄지', '자실장', '성체실장'], output: '실장육', time: 3 },
+                worker: true, accept: ['독라', '새끼독라', '구더기', '엄지', '자실장', '성체실장'], output: '실장육', time: 4 },
   deshell:    { cat: 'processing', name: '탈복기',   w: 4, h: 2, img: 'deshell.png',    color: '#7a7a3a', rotatable: true, tier: 0, powerUse: 10, desc: '성체실장/사육실장→독라, 자실장/새끼사육→새끼독라. 일꾼 슬롯3.',
-                worker: true, accept: ['성체실장', '자실장', '사육실장', '새끼사육실장'], convert: { 성체실장: '독라', 자실장: '새끼독라', 사육실장: '독라', 새끼사육실장: '새끼독라' }, time: 4 },
+                worker: true, accept: ['성체실장', '자실장', '사육실장', '새끼사육실장'], convert: { 성체실장: '독라', 자실장: '새끼독라', 사육실장: '독라', 새끼사육실장: '새끼독라' }, time: 2 },
   grinder:    { cat: 'processing', name: '분쇄기',   w: 2, h: 2, img: 'grinder.png',    color: '#5a5a5a', rotatable: true, tier: 0, powerUse: 10, desc: '모든 실장석·실장육→분쇄육. 소형위석→조미료1 / 중형→3 / 대형→5. (노동석은 드래그로 넣을 때만)',
                 accept: ['성체실장', '자실장', '엄지', '구더기', '점액덩어리', '사육실장', '새끼사육실장', '독라', '새끼독라', '실장육', '소형위석', '중형위석', '대형위석'], output: '분쇄육', time: 0.2 },
   correction: { cat: 'processing', name: '교정시설', w: 3, h: 3, img: 'correction.png', color: '#3a7a6a', rotatable: true, unlock: '교정시설', desc: '자실장·성체실장 6마리 수용. 사육실장 성체 장착 시 개념이 높을수록 교육 효율 증가. 육질0→실장육, 개념30↑·30초↑→사육실장 계열.',
                 accept: ['자실장', '성체실장'], hold: 6 },
   mixer:      { cat: 'processing', name: '배합기',   w: 2, h: 2, img: 'mixer.png',      color: '#6a4a7a', rotatable: true, unlock: '배합기', tier: 1, powerUse: 0, desc: '메뉴를 선택해 배합. 선택한 메뉴의 재료가 모이면 배합을 시작한다. 일꾼 슬롯3.',
-                worker: true, accept: ['분쇄육', '운치', '짓소산', '실장푸드', '조미료', '철조각'], time: 2,
-                // 메뉴(키=산출물). 조리실처럼 메뉴를 골라야 배합 시작.
+                worker: true, accept: ['분쇄육', '운치', '짓소산', '실장푸드', '조미료', '철조각', '농축운치', '고농축운치'], time: 2,
+                // 메뉴(키=산출물). 조리실처럼 메뉴를 골라야 배합 시작. ing=재료 레시피, time=생산 시간(초).
                 mix: {
-                  실장푸드:   { out: '실장푸드',   desc: '분쇄육 1 + 운치 10' },
-                  '짓소산 푸드': { out: '짓소산 푸드', desc: '짓소산 1 + 실장푸드 50' },
-                  우마이푸드: { out: '우마이푸드', desc: '조미료 1 + 실장푸드 50' },
-                  다이어트푸드: { out: '다이어트푸드', desc: '철조각 1 + 실장푸드 50' },
-                  농축운치:   { out: '농축운치',   desc: '운치 5' },
-                  고농축운치: { out: '고농축운치', desc: '농축운치 5' },
-                  초고농축운치: { out: '초고농축운치', desc: '고농축운치 5' },
+                  실장푸드:   { out: '실장푸드',   time: 1, desc: '분쇄육 1 + 운치 10', ing: [{ any: ['분쇄육'], n: 1, stat: true }, { any: ['운치'], n: 10 }] },
+                  '짓소산 푸드': { out: '짓소산 푸드', time: 3, desc: '짓소산 1 + 실장푸드 50', ing: [{ any: ['짓소산'], n: 1 }, { any: ['실장푸드'], n: 50 }] },
+                  우마이푸드: { out: '우마이푸드', time: 3, desc: '조미료 1 + 실장푸드 50', ing: [{ any: ['조미료'], n: 1 }, { any: ['실장푸드'], n: 50 }] },
+                  다이어트푸드: { out: '다이어트푸드', time: 3, desc: '철조각 1 + 실장푸드 50', ing: [{ any: ['철조각'], n: 1 }, { any: ['실장푸드'], n: 50 }] },
+                  농축운치:   { out: '농축운치',   time: 1, desc: '운치 5', ing: [{ any: ['운치'], n: 5 }] },
+                  고농축운치: { out: '고농축운치', time: 4, desc: '농축운치 5', ing: [{ any: ['농축운치'], n: 5 }] },
+                  초고농축운치: { out: '초고농축운치', time: 9, desc: '고농축운치 5', ing: [{ any: ['고농축운치'], n: 5 }] },
                 } },
   cookery:    { cat: 'processing', name: '조리실',   w: 3, h: 2, img: 'cookery.png',    color: '#b5723a', rotatable: true, unlock: '조리실', tier: 1, powerUse: 0, desc: '메뉴를 선택해 조리. 선택한 메뉴의 재료가 모이면 조리를 시작한다. 일꾼 슬롯3.',
                 worker: true,
                 accept: ['구더기', '엄지', '분쇄육', '실장육', '짓소산', '수산물', '조미료', '콘페이토', '농축운치', '코로리', '도돈파'],
                 // ing: {any:[재료들], n:개수, stat:true(품질 반영), seasoning:true(전역 조미료 비축에서 소모)}
                 cook: {
-                  꼬치훈제: { out: '꼬치훈제', desc: '구더기 또는 엄지 3 + 조미료 1', ing: [{ any: ['구더기', '엄지'], n: 3, stat: true }, { any: ['조미료'], n: 1, seasoning: true }] },
-                  실장무침: { out: '실장무침', desc: '구더기 또는 엄지 3 + 짓소산 1', ing: [{ any: ['구더기', '엄지'], n: 3, stat: true }, { any: ['짓소산'], n: 1 }] },
-                  실장젓갈: { out: '실장젓갈', desc: '분쇄육 2 + 짓소산 1', ing: [{ any: ['분쇄육'], n: 2, stat: true }, { any: ['짓소산'], n: 1 }] },
-                  콘페이토: { out: '콘페이토', desc: '조미료 3', ing: [{ any: ['조미료'], n: 3, seasoning: true }] },
-                  도돈파:   { out: '도돈파',   desc: '콘페이토 1 + 농축운치 1', ing: [{ any: ['콘페이토'], n: 1 }, { any: ['농축운치'], n: 1 }] },
-                  코로리:   { out: '코로리',   desc: '짓소산 5', ing: [{ any: ['짓소산'], n: 5 }] },
-                  도로리:   { out: '도로리',   desc: '코로리 1 + 도돈파 1', ing: [{ any: ['코로리'], n: 1 }, { any: ['도돈파'], n: 1 }] },
-                  '호화로운 만찬': { out: '호화로운 만찬', desc: '수산물 1 + 실장육 1', ing: [{ any: ['수산물'], n: 1 }, { any: ['실장육'], n: 1, stat: true }] },
-                  해물찜:   { out: '해물찜',   desc: '수산물 1 + 짓소산 1', ing: [{ any: ['수산물'], n: 1 }, { any: ['짓소산'], n: 1 }] },
-                  '구더기 탄도미사일': { out: '구더기 탄도미사일', desc: '구더기 1 + 도돈파 1', unlock: '구더기탄도미사일', ing: [{ any: ['구더기'], n: 1 }, { any: ['도돈파'], n: 1 }] },
+                  꼬치훈제: { out: '꼬치훈제', time: 2, desc: '구더기 또는 엄지 3 + 조미료 1', ing: [{ any: ['구더기', '엄지'], n: 3, stat: true }, { any: ['조미료'], n: 1, seasoning: true }] },
+                  실장무침: { out: '실장무침', time: 2, desc: '구더기 또는 엄지 3 + 짓소산 1', ing: [{ any: ['구더기', '엄지'], n: 3, stat: true }, { any: ['짓소산'], n: 1 }] },
+                  실장젓갈: { out: '실장젓갈', time: 2, desc: '분쇄육 2 + 짓소산 1', ing: [{ any: ['분쇄육'], n: 2, stat: true }, { any: ['짓소산'], n: 1 }] },
+                  콘페이토: { out: '콘페이토', time: 6, desc: '조미료 3', ing: [{ any: ['조미료'], n: 3, seasoning: true }] },
+                  도돈파:   { out: '도돈파',   time: 6, desc: '콘페이토 1 + 농축운치 1', ing: [{ any: ['콘페이토'], n: 1 }, { any: ['농축운치'], n: 1 }] },
+                  코로리:   { out: '코로리',   time: 6, desc: '짓소산 5', ing: [{ any: ['짓소산'], n: 5 }] },
+                  도로리:   { out: '도로리',   time: 6, desc: '코로리 1 + 도돈파 1', ing: [{ any: ['코로리'], n: 1 }, { any: ['도돈파'], n: 1 }] },
+                  '호화로운 만찬': { out: '호화로운 만찬', time: 4, desc: '수산물 1 + 실장육 1', ing: [{ any: ['수산물'], n: 1 }, { any: ['실장육'], n: 1, stat: true }] },
+                  해물찜:   { out: '해물찜',   time: 4, desc: '수산물 1 + 짓소산 1', ing: [{ any: ['수산물'], n: 1 }, { any: ['짓소산'], n: 1 }] },
+                  '구더기 탄도미사일': { out: '구더기 탄도미사일', time: 12, desc: '구더기 1 + 도돈파 1', unlock: '구더기탄도미사일', ing: [{ any: ['구더기'], n: 1 }, { any: ['도돈파'], n: 1 }] },
                 },
                 time: 3 },
   acidgen:    { cat: 'processing', name: '짓소산 생성기', w: 3, h: 3, img: 'acidgen.png', color: '#2f8f75', rotatable: true, unlock: '짓소산생성기', tier: 2, powerUse: 30, powerRequired: true, desc: '성체실장 1마리의 행복을 5씩 짜낸다. 행복 5가 떨어질 때마다 짓소산 1개, 행복이 0이 되면 분쇄육 1개를 만든다.',
@@ -552,8 +554,14 @@ G.DEVICES = {
   launchpad: { cat: 'production', name: '버려진 발사대', w: 5, h: 5, img: 'rocket_stay.png', color: '#5f6670', rotatable: false, fixed: true, desc: '인류의 마지막 탈출선. 철조각·상품·초고농축 운치와 막대한 전력을 요구한다.' },
   // 포장기: 가공 탭. 철조각을 곁들여 통조림/진공포장 가공.
   packer: { cat: 'processing', name: '포장기', w: 3, h: 3, img: 'packer.png', color: '#7b6a42', rotatable: true, unlock: '포장기', tier: 1, powerUse: 25, powerRequired: true,
-            accept: ['분쇄육', '실장육', '수산물', '철조각'], time: 1.5,
-            desc: '분쇄육1+철조각1→통조림1. 실장육1+철조각1→진공포장1. 수산물1+철조각1→참치 통조림1.' },
+            accept: ['분쇄육', '실장육', '수산물', '철조각'], time: 4,
+            // 조리실처럼 메뉴(레시피)를 골라야 포장 시작. ing=재료, time=생산 시간(초).
+            pack: {
+              통조림:   { out: '통조림',   time: 4, desc: '분쇄육 1 + 철조각 1', ing: [{ any: ['분쇄육'], n: 1, stat: true }, { any: ['철조각'], n: 1 }] },
+              진공포장: { out: '진공포장', time: 4, desc: '실장육 1 + 철조각 1', ing: [{ any: ['실장육'], n: 1, stat: true }, { any: ['철조각'], n: 1 }] },
+              '참치 통조림': { out: '참치 통조림', time: 4, desc: '수산물 1 + 철조각 1', ing: [{ any: ['수산물'], n: 1, stat: true }, { any: ['철조각'], n: 1 }] },
+            },
+            desc: '메뉴를 선택해 포장. 분쇄육+철조각→통조림 / 실장육+철조각→진공포장 / 수산물+철조각→참치 통조림. 각 4초.' },
   // 물류센터: 물류 탭. 화물/실장석을 넣으면 즉시 판매(옛 포장기 역할).
   salecenter: { cat: 'logistics', name: '물류센터', w: 4, h: 4, img: 'salecenter.png', color: '#3a5a7a', rotatable: false, special: 'pack', upgradable: true, unlock: '물류센터', tier: 2, powerUse: 30, powerRequired: true, desc: '판매 가능한 화물·실장석이 들어오는 즉시 판매됨.' },
   jisoucharge: { cat: 'power', name: '실장력 발전소', w: 2, h: 2, img: 'jisoucharge.png', color: '#6a9a72', rotatable: false, tier: 0, power: 20, accept: ['성체실장'], desc: '성체실장 장착 시 초당 전력 20. 장착 개체 HP가 초당 0.1 감소, 소진 시 실장육 배출.' },

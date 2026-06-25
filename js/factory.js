@@ -188,6 +188,8 @@ G.Factory = (function () {
     birthZones: [],
     birthZoneRects: [],
     specialColliders: [],
+    grabbers: [],
+    powerPlants: [],
     penCellMap: new Map(),
     feedCellCache: new Map(),
   };
@@ -225,11 +227,14 @@ G.Factory = (function () {
     const a = cargoIdx.get(k);
     if (a) a.push(cg); else cargoIdx.set(k, [cg]);
   }
-  function rebuildFrameCaches() {
+  let frameStaticCacheT = 0;
+  function rebuildStaticFrameCaches() {
     frameCache.pens.length = 0; frameCache.warehouses.length = 0;
     frameCache.feedZones.length = 0; frameCache.feedZoneRects.length = 0;
     frameCache.birthZones.length = 0; frameCache.birthZoneRects.length = 0;
     frameCache.specialColliders.length = 0;
+    frameCache.grabbers.length = 0;
+    frameCache.powerPlants.length = 0;
     frameCache.penCellMap.clear();
     frameCache.feedCellCache.clear();
     for (const b of S.buildings) {
@@ -239,6 +244,8 @@ G.Factory = (function () {
         frameCache.pens.push(b);
         for (const cell of penAbsCells(b)) frameCache.penCellMap.set(cell.c + '|' + cell.r, b);
       }
+      if (isGrabberType(b.type)) frameCache.grabbers.push(b);
+      if (POWER_PLANTS.has(b.type)) frameCache.powerPlants.push(b);
       else if (b.type === 'warehouse' || b.type === 'largewarehouse' || b.type === 'colony') frameCache.warehouses.push(b);
       else if (def.special === 'feed') {
         frameCache.feedZones.push(b);
@@ -251,9 +258,20 @@ G.Factory = (function () {
       if (b.type === 'techica' && (b.w !== 1 || b.h !== 1)) { b.w = 1; b.h = 1; }   // 1×1 보정(구버전 호환)
       if (b.type === 'skewer' || b.type === 'techica') frameCache.specialColliders.push(b);
     }
+  }
+  function rebuildFrameCaches() {
+    rebuildStaticFrameCaches();
     rebuildCargoIndex();
     rebuildCargoSpatial();
     rebuildWanderSpatial();
+  }
+  function refreshFrameCaches(dt) {
+    frameCache.feedCellCache.clear();
+    frameStaticCacheT -= dt;
+    if (frameStaticCacheT <= 0) {
+      frameStaticCacheT = 0.2;
+      rebuildStaticFrameCaches();
+    }
   }
 
   const occ = Array.from({ length: ROWS }, () => Array(COLS).fill(null));
@@ -366,7 +384,7 @@ G.Factory = (function () {
     return 0;
   }
   function playerStackCount(type) {
-    return playerResourceAmount(type) + ((S.warehouse[type] && S.warehouse[type].length) || 0);
+    return playerResourceAmount(type) + whUnits(S.warehouse[type]);
   }
   function playerInventoryCapacity() {
     return Infinity;
@@ -396,8 +414,7 @@ G.Factory = (function () {
       }
       return out;
     }
-    const list = S.warehouse[type] || [];
-    return list.splice(0, Math.min(n, list.length));
+    return whTakeUnits(S.warehouse[type] || [], n);
   }
   function putPlayerInventory(items) {
     const rejected = [];
@@ -409,7 +426,7 @@ G.Factory = (function () {
     if (!payload || !payload.type || payload.source === dest) return;
     const available = payload.source === 'player'
       ? playerStackCount(payload.type)
-      : (inventoryWarehouse && inventoryOf(inventoryWarehouse)[payload.type] ? inventoryOf(inventoryWarehouse)[payload.type].length : 0);
+      : (inventoryWarehouse ? whUnits(inventoryOf(inventoryWarehouse)[payload.type]) : 0);
     const max = Math.min(payload.max || 100, available);
     if (!max) return;
     const n = askInventoryAmount(max, '옮길 수량');
@@ -425,9 +442,9 @@ G.Factory = (function () {
       const inv = inventoryOf(inventoryWarehouse);
       const moveN = Math.min(n, playerInventoryRoom());
       if (moveN <= 0) { G.UI.flash && G.UI.flash('콜로니센터 인벤토리가 가득 찼습니다.'); return; }
-      const items = (inv[payload.type] || []).splice(0, moveN);
+      const items = whTakeUnits(inv[payload.type] || [], moveN);
       const rejected = putPlayerInventory(items);
-      if (rejected.length) inv[payload.type].unshift(...rejected);
+      if (rejected.length) { inv[payload.type] = inv[payload.type] || []; rejected.forEach(d => whAddData(inv[payload.type], d, whUnitsOf(d))); }
     }
     G.Assets.playSfx('click');
     renderInventoryPanels(true);
@@ -466,11 +483,11 @@ G.Factory = (function () {
       const count = inventoryCount(inv), cap = warehouseCapacity(inventoryWarehouse);
       warehouseInventoryEl.querySelector('.inventory-head b').textContent = G.DEVICES[inventoryWarehouse.type].name;
       warehouseInventoryEl.querySelector('.inventory-summary').textContent = `저장 ${count.toLocaleString()} / ${cap.toLocaleString()}`;
-      const types = Object.keys(inv).filter(t => inv[t] && inv[t].length);
-      const sig = `${inventoryWarehouse.id}|${cap}|` + types.map(t => `${t}:${inv[t].length}`).join('|');
+      const types = Object.keys(inv).filter(t => whUnits(inv[t]) > 0);
+      const sig = `${inventoryWarehouse.id}|${cap}|` + types.map(t => `${t}:${whUnits(inv[t])}`).join('|');
       if (force || sig !== warehouseInventorySig) {
         warehouseInventorySig = sig;
-        warehouseInventoryEl.querySelector('.inventory-items').innerHTML = inventoryItemsHtml(types, t => inv[t].length, 'warehouse', cap);
+        warehouseInventoryEl.querySelector('.inventory-items').innerHTML = inventoryItemsHtml(types, t => whUnits(inv[t]), 'warehouse', cap);
       }
       const up = warehouseInventoryEl.querySelector('.inventory-upgrade');
       up.style.display = inventoryWarehouse.type === 'warehouse' ? '' : 'none';
@@ -1523,14 +1540,118 @@ G.Factory = (function () {
   function refund(cost, ratio) {
     if (cost > 0) S.money += Math.floor(cost * (ratio == null ? 0.75 : ratio));
   }
+  /* ---- 창고 스택 유틸 -------------------------------------------------
+   * 창고 재고는 [{type, amount, stats, price, isProduct, ...}] 배열이며,
+   * 같은 종류·스탯·가격 아이템은 amount로 합쳐 보관한다(메모리/세이브 절약).
+   * 수량은 항상 amount의 합으로 센다(.length 아님). */
+  function whUnitsOf(d) { return Math.max(1, Math.floor((d && d.amount) || 1)); }
+  function whUnits(list) {
+    if (!Array.isArray(list)) return 0;
+    let n = 0; for (const d of list) n += whUnitsOf(d); return n;
+  }
+  function whStackKey(d) {
+    const s = (d && d.stats) || {};
+    return (d.type || '') + '|' + (d.isProduct ? 1 : 0) + '|' + (d.price || 0)
+      + '|' + (s.육질 || 0) + '|' + (s.개념 || 0) + '|' + (s.크기 || 0);
+  }
+  // data를 units개수만큼 list에 추가(동일 스택이 있으면 amount 합산)
+  function whAddData(list, data, units) {
+    units = Math.max(1, Math.floor(units != null ? units : ((data && data.amount) || 1)));
+    const key = whStackKey(data);
+    for (const d of list) {
+      if (whStackKey(d) === key) { d.amount = whUnitsOf(d) + units; return; }
+    }
+    list.push(Object.assign({}, data, { amount: units }));
+  }
+  // list에서 최대 n단위를 꺼내 단위별 객체 배열로 반환(빈 스택 정리)
+  function whTakeUnits(list, n) {
+    const out = [];
+    if (!Array.isArray(list)) return out;
+    let need = Math.max(0, Math.floor(n));
+    for (let i = 0; i < list.length && need > 0; i++) {
+      const d = list[i];
+      const have = whUnitsOf(d);
+      const take = Math.min(have, need);
+      for (let k = 0; k < take; k++) out.push(Object.assign({}, d, { amount: 1, id: G.uid() }));
+      d.amount = have - take;
+      need -= take;
+    }
+    for (let i = list.length - 1; i >= 0; i--) if (whUnitsOf(list[i]) <= 0) list.splice(i, 1);
+    return out;
+  }
+  // list 머리 스택에서 1단위만 제거(빈 스택은 shift)
+  function whDecOne(list) {
+    const d = list && list[0]; if (!d) return;
+    const have = whUnitsOf(d);
+    if (have <= 1) list.shift(); else d.amount = have - 1;
+  }
+  // 배열 내 동일 스택을 합쳐 객체 수를 최소화(로드 시 거대 세이브 압축)
+  function compactList(list) {
+    if (!Array.isArray(list) || list.length <= 1) return list;
+    const map = new Map();
+    for (const d of list) {
+      if (!d || !d.type) continue;
+      const key = whStackKey(d);
+      const head = map.get(key);
+      if (head) head.amount = whUnitsOf(head) + whUnitsOf(d);
+      else { d.amount = whUnitsOf(d); map.set(key, d); }
+    }
+    return Array.from(map.values());
+  }
+  // 전 창고(글로벌 + 도쿠라 로컬) 재고를 스택으로 압축
+  function compactWarehouses() {
+    for (const t of Object.keys(S.warehouse || {})) {
+      S.warehouse[t] = compactList(S.warehouse[t]);
+      if (!S.warehouse[t].length) delete S.warehouse[t];
+    }
+    for (const b of (S.buildings || [])) {
+      if (b && b.inventory && typeof b.inventory === 'object') {
+        for (const t of Object.keys(b.inventory)) {
+          b.inventory[t] = compactList(b.inventory[t]);
+          if (!b.inventory[t].length) delete b.inventory[t];
+        }
+      }
+    }
+  }
+  // 구버전 세이브: 배합기 슬롯(slotMeat/unchiN/…)·포장기 배열(minced/meat/…) → 통합 mats 비축으로 이관.
+  // 캡(100)은 무시하고 기존 보유분 보존(이후 소진되며 새 입고는 100까지만 받음).
+  function migrateProcessorMaterials() {
+    for (const b of (S.buildings || [])) {
+      if (b.type === 'mixer') {
+        if (b.slotMeat || b.unchiN || b.slotAcid || b.slotSeasoning || b.slotScrap || b.cA || b.cB || b.foodN) {
+          if (b.slotMeat) addMaterialRaw(b, '분쇄육', 1, b.slotMeat.stats);
+          if (b.unchiN) addMaterialRaw(b, '운치', b.unchiN);
+          if (b.slotAcid) addMaterialRaw(b, '짓소산', 1, b.slotAcid.stats);
+          if (b.slotSeasoning) addMaterialRaw(b, '조미료', 1, b.slotSeasoning.stats);
+          if (b.slotScrap) addMaterialRaw(b, '철조각', 1, b.slotScrap.stats);
+          if (b.cA) addMaterialRaw(b, '농축운치', b.cA);
+          if (b.cB) addMaterialRaw(b, '고농축운치', b.cB);
+          if (b.foodN) addMaterialRaw(b, '실장푸드', b.foodN);
+          b.slotMeat = b.slotAcid = b.slotSeasoning = b.slotScrap = null;
+          b.unchiN = b.cA = b.cB = b.foodN = 0;
+        }
+        if (!b.mats) b.mats = {};
+        if (!b.matStats) b.matStats = {};
+      } else if (b.type === 'packer') {
+        if ((b.minced && b.minced.length) || (b.meat && b.meat.length) || (b.seafood && b.seafood.length) || b.scrapN) {
+          for (const m of (b.minced || [])) addMaterialRaw(b, '분쇄육', 1, m && m.stats);
+          for (const m of (b.meat || [])) addMaterialRaw(b, '실장육', 1, m && m.stats);
+          for (const m of (b.seafood || [])) addMaterialRaw(b, '수산물', 1, m && m.stats);
+          if (b.scrapN) addMaterialRaw(b, '철조각', b.scrapN);
+          b.minced = b.meat = b.seafood = null; b.scrapN = 0;
+        }
+        if (!b.mats) b.mats = {};
+        if (!b.matStats) b.matStats = {};
+      }
+    }
+  }
   function warehouseCount(type) {
-    const list = S.warehouse[type];
-    return list ? list.length : 0;
+    return whUnits(S.warehouse[type]);
   }
   function takeWarehouse(type, n) {
     const list = S.warehouse[type];
-    if (!list || list.length < n) return false;
-    list.splice(0, n);
+    if (whUnits(list) < n) return false;
+    whTakeUnits(list, n);
     return true;
   }
   function isLocalWarehouse(b) {
@@ -1542,7 +1663,7 @@ G.Factory = (function () {
     return b.inventory;
   }
   function inventoryCount(inv) {
-    return Object.keys(inv || {}).reduce((n, type) => n + ((inv[type] && inv[type].length) || 0), 0);
+    return Object.keys(inv || {}).reduce((n, type) => n + whUnits(inv[type]), 0);
   }
   function warehouseCapacity(b) {
     if (!isLocalWarehouse(b)) return Infinity;
@@ -1695,6 +1816,13 @@ G.Factory = (function () {
     el.querySelectorAll('[data-mix-menu]').forEach(btn => btn.onclick = () => {
       if (!b || b.type !== 'mixer') return;
       b.menu = (b.menu === btn.dataset.mixMenu) ? null : btn.dataset.mixMenu;   // 다시 누르면 해제
+      b.timer = 0;
+      G.Assets.playSfx('click');
+      showDeviceInfoForBuilding(b, deviceInfoAnchor ? deviceInfoAnchor.x : clientX, deviceInfoAnchor ? deviceInfoAnchor.y : clientY);
+    });
+    el.querySelectorAll('[data-pack-menu]').forEach(btn => btn.onclick = () => {
+      if (!b || b.type !== 'packer') return;
+      b.menu = (b.menu === btn.dataset.packMenu) ? null : btn.dataset.packMenu;   // 다시 누르면 해제
       b.timer = 0;
       G.Assets.playSfx('click');
       showDeviceInfoForBuilding(b, deviceInfoAnchor ? deviceInfoAnchor.x : clientX, deviceInfoAnchor ? deviceInfoAnchor.y : clientY);
@@ -1875,8 +2003,19 @@ G.Factory = (function () {
       }).join('');
       const effDesc = cur && FEED_DESC[mix[cur].out] ? `<div class="di-desc-sub">효과: ${FEED_DESC[mix[cur].out]}</div>` : '';
       return '<div class="di-row"><span>메뉴 선택</span><b>' + (cur ? mix[cur].out : '없음') + '</b></div>' +
-        (cur ? `<div class="di-desc-sub">재료: ${mix[cur].desc}</div>` : '<div class="di-desc-sub">메뉴를 골라야 배합을 시작합니다.</div>') +
+        (cur ? `<div class="di-desc-sub">재료: ${mix[cur].desc} · ${mix[cur].time || G.DEVICES.mixer.time}초</div>` : '<div class="di-desc-sub">메뉴를 골라야 배합을 시작합니다.</div>') +
         effDesc +
+        '<div class="di-actions cook-menu">' + btns + '</div>';
+    }
+    if (b.type === 'packer') {
+      const pack = G.DEVICES.packer.pack;
+      const cur = b.menu || '';
+      const btns = Object.keys(pack).filter(key => !pack[key].unlock || (S.upgrades && S.upgrades[pack[key].unlock])).map(key => {
+        const r = pack[key];
+        return `<button class="cook-menu-btn ${cur === key ? 'active' : ''}" data-pack-menu="${key}" title="${escAttr(r.out + ' — ' + r.desc)}">${deviceInfoItemIcon(r.out)}<small>${r.out}</small></button>`;
+      }).join('');
+      return '<div class="di-row"><span>메뉴 선택</span><b>' + (cur ? pack[cur].out : '없음') + '</b></div>' +
+        (cur ? `<div class="di-desc-sub">재료: ${pack[cur].desc} · ${pack[cur].time || G.DEVICES.packer.time}초</div>` : '<div class="di-desc-sub">메뉴를 골라야 포장을 시작합니다.</div>') +
         '<div class="di-actions cook-menu">' + btns + '</div>';
     }
     return '';
@@ -2450,9 +2589,9 @@ G.Factory = (function () {
     return `<span class="di-item-icon" style="background:${color}"></span>`;
   }
   function warehouseInventoryHtml() {
-    const keys = Object.keys(S.warehouse || {}).filter(k => S.warehouse[k] && S.warehouse[k].length).sort((a, b) => a.localeCompare(b, 'ko'));
+    const keys = Object.keys(S.warehouse || {}).filter(k => whUnits(S.warehouse[k]) > 0).sort((a, b) => a.localeCompare(b, 'ko'));
     if (!keys.length) return '<div class="di-inv-empty">재고 없음</div>';
-    return '<div class="di-inv-grid">' + keys.map(k => `<div class="di-inv-item">${deviceInfoItemIcon(k)}<span>${FILTER_LABEL[k] || k}</span><b>${S.warehouse[k].length.toLocaleString()}</b></div>`).join('') + '</div>';
+    return '<div class="di-inv-grid">' + keys.map(k => `<div class="di-inv-item">${deviceInfoItemIcon(k)}<span>${FILTER_LABEL[k] || k}</span><b>${whUnits(S.warehouse[k]).toLocaleString()}</b></div>`).join('') + '</div>';
   }
   function listText(list) { return list && list.length ? list.join(', ') : '없음'; }
   function deviceCargoCount(b) { return b && b.outBuffer ? b.outBuffer.length : 0; }
@@ -2554,23 +2693,23 @@ G.Factory = (function () {
       ['산출', '사육실장 계열 / 실장육'],
     ]);
     if (b.type === 'mixer') {
-      const recipeA = b.slotMeat && (b.unchiN || 0) >= C.MIX_UNCHI;
-      const recipeB = b.slotAcid && (b.foodN || 0) >= (C.MIX_FOOD_NEED || 50);
+      const cur = b.menu && def.mix[b.menu];
       return infoRows([
-        ['실장푸드', `분쇄육1 + 운치${C.MIX_UNCHI} → 실장푸드${C.MIX_FOOD}`],
-        ['짓소산 푸드', `짓소산1 + 실장푸드${C.MIX_FOOD_NEED || 50} → 짓소산 푸드50`],
-        ['분쇄육/운치', `${b.slotMeat ? '✓' : '·'} / ${b.unchiN || 0}/${C.MIX_UNCHI}`],
-        ['짓소산/실장푸드', `${b.slotAcid ? '✓' : '·'} / ${b.foodN || 0}/${C.MIX_FOOD_NEED || 50}`],
-        ['만드는 중', recipeA ? `실장푸드${C.MIX_FOOD}` : (recipeB ? '짓소산 푸드50' : '없음')],
-      ['적체 화물', `${deviceCargoCount(b)}/10`],
+        ['메뉴', cur ? cur.out : '미선택 (정보창 하단에서 선택)'],
+        ['레시피', cur ? cur.desc + ` · ${cur.time || def.time}초` : '메뉴를 골라야 배합 시작'],
+        ['재료(최대100)', matSummaryText(b)],
+        ['적체 화물', `${deviceCargoCount(b)}/10`],
       ]);
     }
-    if (b.type === 'cookery') return infoRows([
-      ['필요', '재료 + 조미료1'],
-      ['만드는 중', (b.cooking && def.cook[b.cooking]) ? def.cook[b.cooking].out : '없음'],
-      ['재료', b.mats ? Object.keys(b.mats).filter(k => b.mats[k]).map(k => k + ' ' + b.mats[k]).join(', ') || '없음' : '없음'],
-      ['조미료', `${Math.floor(b.seasoning || 0)}/${C.SEASONING_MAX || 200}`],
-    ]);
+    if (b.type === 'cookery') {
+      const cur = b.menu && def.cook[b.menu];
+      return infoRows([
+        ['메뉴', cur ? cur.out : '미선택 (정보창 하단에서 선택)'],
+        ['레시피', cur ? cur.desc + ` · ${cur.time || def.time}초` : '메뉴를 골라야 조리 시작'],
+        ['재료(최대100)', b.mats ? (Object.keys(b.mats).filter(k => b.mats[k]).map(k => k + ' ' + b.mats[k]).join(', ') || '없음') : '없음'],
+        ['조미료', `${Math.floor(b.seasoning || 0)}/${materialCap()}`],
+      ]);
+    }
     if (b.type === 'mortar') return infoRows([
       ['강제 공격', b.manualTarget ? `진행 중 · 우클릭으로 중단` : '지면 우클릭으로 시작'],
       ['일반 사거리', Math.round(turretRange(Object.assign({}, b, { missileAmmo: 0 }))) + '타일'],
@@ -2715,12 +2854,15 @@ G.Factory = (function () {
       ['기능', '판매 가능 화물·실장석 즉시 판매'],
       ['판매가 보너스', '+' + ((b.up || 0) * 10) + '% (Lv.' + (b.up || 0) + ')'],
     ]);
-    if (b.type === 'packer') return infoRows([
-      ['레시피', '분쇄육+철→통조림 / 실장육+철→진공포장'],
-      ['철조각', (b.scrapN || 0) + '개'],
-      ['분쇄육', ((b.minced && b.minced.length) || 0) + '개'],
-      ['실장육', ((b.meat && b.meat.length) || 0) + '개'],
-    ]);
+    if (b.type === 'packer') {
+      const cur = b.menu && def.pack[b.menu];
+      return infoRows([
+        ['메뉴', cur ? cur.out : '미선택 (정보창 하단에서 선택)'],
+        ['레시피', cur ? cur.desc + ` · ${cur.time || def.time}초` : '메뉴를 골라야 포장 시작'],
+        ['재료(최대100)', matSummaryText(b)],
+        ['적체 화물', `${deviceCargoCount(b)}/10`],
+      ]);
+    }
     if (isTurretLike(b)) {
       const modeLabel = { raider: '약탈자만', wild: '외부 출신', all: '전부' };
       const rows = [
@@ -2951,14 +3093,22 @@ G.Factory = (function () {
     return deviceCells(b);
   }
   function isGrabberType(type) { return type === 'grabber' || type === 'longgrabber'; }
+  // 집게 역할 셀(pickup/mid/drop)은 위치·방향·종류에만 의존하므로 프레임마다 여러 번
+  // 재계산하지 않고 geometry 시그니처로 캐시한다(집게 시뮬 핫패스 최적화).
+  const grabberRolesCache = new WeakMap();
   function grabberRoles(b) {
+    const key = (b.type || 'grabber') + '|' + b.col + '|' + b.row + '|' + b.dir;
+    const cached = grabberRolesCache.get(b);
+    if (cached && cached.key === key) return cached.roles;
     const cells = footprint(b.type || 'grabber', b.col, b.row, b.dir).cells;
     let o;
     if (b.dir === 1) o = cells.slice().sort((a, z) => a.c - z.c);
     else if (b.dir === 3) o = cells.slice().sort((a, z) => z.c - a.c);
     else if (b.dir === 2) o = cells.slice().sort((a, z) => a.r - z.r);
     else o = cells.slice().sort((a, z) => z.r - a.r);
-    return { pickup: o[0], mid: o[Math.floor(o.length / 2)], drop: o[o.length - 1] };
+    const roles = { pickup: o[0], mid: o[Math.floor(o.length / 2)], drop: o[o.length - 1] };
+    grabberRolesCache.set(b, { key, roles });
+    return roles;
   }
   function washInputCell(b) {
     if (b.dir === 1) return { c: b.col, r: b.row };
@@ -3696,6 +3846,8 @@ G.Factory = (function () {
       b.cost = G.BUILD_COST.crossbelt || b.cost;
     }
     rebuildGrids();
+    compactWarehouses();   // 창고 재고를 amount 스택으로 압축(거대 세이브/렉 방지)
+    migrateProcessorMaterials();   // 구버전 배합기 슬롯/포장기 배열 → 통합 mats 비축
     if (!S.weather) S.weather = { rollIn: C.WEATHER_ROLL_SEC || 60, rainLeft: 0 };
     if (!S.buildInstallCounts || typeof S.buildInstallCounts !== 'object') S.buildInstallCounts = {};
     G.Assets.setAmbience && G.Assets.setAmbience(G.RAIN_SOUND, S.weather.rainLeft > 0);
@@ -3936,7 +4088,7 @@ G.Factory = (function () {
     else if (type === 'sorter') { b.toggle = 0; b.filter = []; b.filterLane = 1; b.buffer = []; }
     else if (['slaughter', 'deshell', 'grinder'].includes(type)) { b.item = null; b.timer = 0; b.state = 'idle'; b.weight = 0; b.outputs = []; b.outBuffer = []; if (type === 'slaughter') b.sideOutputs = []; }
     else if (type === 'correction') { b.inmates = []; b.state = 'idle'; }
-    else if (type === 'mixer') { b.slotMeat = null; b.unchiN = 0; b.slotAcid = null; b.foodN = 0; b.timer = 0; b.state = 'idle'; b.outBuffer = []; }
+    else if (type === 'mixer') { b.mats = {}; b.matStats = {}; b.menu = null; b.timer = 0; b.state = 'idle'; b.outBuffer = []; }
     else if (type === 'cookery') { b.mats = {}; b.seasoning = 0; b.cooking = null; b.timer = 0; b.state = 'idle'; b.outBuffer = []; }
     else if (type === 'acidgen') { b.item = null; b.output = null; b.timer = 0; b.acidTick = 0; b.acidProgress = 0; b.state = 'idle'; b.outBuffer = []; }
     else if (type === 'catcher') { b.filter = []; b.cd = 0; b.up = { range: 0 }; b.phase = 'idle'; b.arm = null; b.holding = null; b.target = null; }
@@ -3962,7 +4114,7 @@ G.Factory = (function () {
     else if (type === 'turret' || type === 'sniper' || type === 'mortar' || type === 'chaosturret') { b.cd = 0; b.up = { dmg: 0, rate: 0, range: 0 }; b.kills = 0; b.mode = 'raider'; b.aim = -Math.PI / 2; if (type === 'mortar') b.missileAmmo = 0; }
     else if (type === 'mine') { b.armed = true; speakFrom(b, G.LINES && G.LINES.mine, 2.2); b.talkT = 3 + Math.random() * 4; }
     else if (type === 'salecenter') { b.state = 'idle'; b.packT = 0; b.up = 0; }
-    else if (type === 'packer') { b.state = 'idle'; b.minced = []; b.meat = []; b.scrapN = 0; }
+    else if (type === 'packer') { b.state = 'idle'; b.mats = {}; b.matStats = {}; b.menu = null; b.timer = 0; b.outBuffer = []; }
     else if (type === 'tunnel' || type === 'crossbelt') { b.queue = []; }
     else if (POWER_PLANTS.has(type)) { b.state = 'idle'; b.worker = null; b.fuel = null; b.fuelT = 0; b.fuelMax = 0; b.chaosVictims = []; b.outBuffer = []; }
     else if (POWER_POLES.has(type)) { b.state = 'idle'; b.powered = false; }
@@ -4067,17 +4219,15 @@ G.Factory = (function () {
     refund(b.cost || buildCost(b.type, b.w, b.h));
     if (b.scrapCost) {
       if (!S.warehouse['철조각']) S.warehouse['철조각'] = [];
-      const returned = Math.floor(b.scrapCost * 0.75);
-      for (let i = 0; i < returned; i++) S.warehouse['철조각'].push(resourceCargoData('철조각'));
+      whAddData(S.warehouse['철조각'], resourceCargoData('철조각'), Math.floor(b.scrapCost * 0.75));
     }
     if (b.electronicPartsCost) {
       if (!S.warehouse['전자부품']) S.warehouse['전자부품'] = [];
-      const returned = Math.floor(b.electronicPartsCost * 0.75);
-      for (let i = 0; i < returned; i++) S.warehouse['전자부품'].push(resourceCargoData('전자부품'));
+      whAddData(S.warehouse['전자부품'], resourceCargoData('전자부품'), Math.floor(b.electronicPartsCost * 0.75));
     }
     if (b.chaosMaggotCost) {
       if (!S.warehouse['카오스 구더기']) S.warehouse['카오스 구더기'] = [];
-      for (let i = 0; i < b.chaosMaggotCost; i++) S.warehouse['카오스 구더기'].push(resourceCargoData('카오스 구더기'));
+      whAddData(S.warehouse['카오스 구더기'], resourceCargoData('카오스 구더기'), b.chaosMaggotCost);
     }
     const ctr = buildingCenter(b);
     const release = (d) => { if (d && !d.isProduct && G.CREATURES[d.type]) spawnWanderer(d, ctr.gx + (Math.random() - 0.5), ctr.gy + (Math.random() - 0.5)); };
@@ -4427,34 +4577,19 @@ G.Factory = (function () {
         if (!dev.buffer) dev.buffer = [];
         if (dev.buffer.length < SORTER_BUF) { dev.buffer.push(data); return true; }
         return false;
-      case 'mixer': {
-        const conc = C.MIX_CONCENTRATE || 5;
-        if (data.type === '분쇄육' && !dev.slotMeat) { dev.slotMeat = data; return true; }
-        if (data.type === '운치' && (dev.unchiN || 0) < C.MIX_UNCHI) { dev.unchiN = Math.min(C.MIX_UNCHI, (dev.unchiN || 0) + (data.amount || 1)); return true; }
-        if (data.type === '짓소산' && !dev.slotAcid) { dev.slotAcid = data; return true; }
-        if (data.type === '조미료' && !dev.slotSeasoning) { dev.slotSeasoning = data; return true; }  // 우마이푸드 재료
-        if (data.type === '철조각' && !dev.slotScrap) { dev.slotScrap = data; return true; }          // 다이어트푸드 재료
-        if (data.type === '농축운치' && (dev.cA || 0) < conc) { dev.cA = (dev.cA || 0) + (data.amount || 1); return true; }   // → 고농축운치
-        if (data.type === '고농축운치' && (dev.cB || 0) < conc) { dev.cB = (dev.cB || 0) + (data.amount || 1); return true; } // → 초고농축운치
-        if (data.type === '실장푸드' && (dev.foodN || 0) < (C.MIX_FOOD_NEED || 50)) { dev.foodN = Math.min(C.MIX_FOOD_NEED || 50, (dev.foodN || 0) + (data.amount || 1)); return true; }
+      case 'mixer':
+        // 재료(종류별 최대 100)는 mats에 비축, 그 외(실장석)는 일꾼 슬롯
+        if (accepts(def, data.type) && !G.CREATURES[data.type]) return addMaterial(dev, data);
         return addWorker(dev, data);
-      }
       case 'cookery':
-        if (data.type === '조미료') {
+        if (data.type === '조미료') {   // 조미료는 조리실 내부 비축(최대 100)
           const amount = Math.max(1, data.amount || 1);
-          if ((dev.seasoning || 0) + amount > (C.SEASONING_MAX || 200)) return false;
+          if ((dev.seasoning || 0) + amount > materialCap()) return false;
           dev.seasoning = (dev.seasoning || 0) + amount;
           playDeviceSfx('click', dev);
           return true;
         }
-        if (accepts(def, data.type)) {   // 메뉴 재료 비축(잘못된 재료여도 받아두되, 선택 메뉴가 충족돼야 조리)
-          if (!dev.mats) dev.mats = {};
-          if (!dev.matStats) dev.matStats = {};
-          if (!Array.isArray(dev.matStats[data.type])) dev.matStats[data.type] = [];
-          dev.mats[data.type] = (dev.mats[data.type] || 0) + 1;
-          dev.matStats[data.type].push(Object.assign({ 육질: 0, 개념: 0, 크기: 0 }, data.stats || {}));
-          return true;
-        }
+        if (accepts(def, data.type)) return addMaterial(dev, data);   // 메뉴 재료 비축(최대 100)
         return addWorker(dev, data);
       case 'acidgen':
         if (data.type === '성체실장' && !dev.item && !dev.output) { dev.item = data; dev.timer = 0; dev.state = 'producing'; return true; }
@@ -4510,11 +4645,8 @@ G.Factory = (function () {
         if (t && !dev.fuel && !dev.fuelT) { dev.fuel = data; dev.fuelT = t; dev.fuelMax = t; dev.state = isPowerPlantActive(dev) ? 'producing' : 'ready'; return true; }
         return false;
       }
-      case 'packer':   // 포장기(가공): 분쇄육+철조각→통조림 / 실장육+철조각→진공포장 / 수산물+철조각→참치 통조림
-        if (data.type === '철조각') { dev.scrapN = (dev.scrapN || 0) + (data.amount || 1); return true; }
-        if (data.type === '분쇄육') { (dev.minced = dev.minced || []).push(data); return true; }
-        if (data.type === '실장육') { (dev.meat = dev.meat || []).push(data); return true; }
-        if (data.type === '수산물') { (dev.seafood = dev.seafood || []).push(data); return true; }
+      case 'packer':   // 포장기(가공): 메뉴 선택형. 재료(분쇄육/실장육/수산물/철조각) 종류별 최대 100
+        if (accepts(def, data.type)) return addMaterial(dev, data);
         return false;
       case 'tunnel': case 'crossbelt': case 'chaosgate':
         if (dev.type === 'chaosgate') {
@@ -4748,7 +4880,12 @@ G.Factory = (function () {
       const list = inv[type]; if (!list || !list.length) continue;
       if (f.length && !f.includes(type)) continue;
       const idx = list.findIndex(d => matchItem(grabber, d, list));
-      if (idx >= 0) return list.splice(idx, 1)[0];
+      if (idx >= 0) {                                // 스택에서 1단위만 추출
+        const d = list[idx], have = whUnitsOf(d);
+        if (have <= 1) return list.splice(idx, 1)[0];
+        d.amount = have - 1;
+        return Object.assign({}, d, { amount: 1, id: G.uid() });
+      }
     }
     if (isLocalWarehouse(source)) return null;
     for (const [type, info] of Object.entries(GLOBAL_WAREHOUSE_RESOURCES)) {
@@ -4775,10 +4912,7 @@ G.Factory = (function () {
       const units = Math.max(1, Math.floor(data.amount || 1));
       if (inventoryCount(inv) + units > warehouseCapacity(source)) return false;
       if (!inv[data.type]) inv[data.type] = [];
-      for (let i = 0; i < units; i++) inv[data.type].push(Object.assign({}, data, {
-        id: i === 0 ? data.id : G.uid(), amount: 1,
-        stats: data.stats ? Object.assign({}, data.stats) : { 크기: 0 },
-      }));
+      whAddData(inv[data.type], data, units);
       return true;
     }
     if (S.autoSell[data.type] && !['실장푸드', '짓소산 푸드', '우마이푸드', '다이어트푸드', '운치', '조미료'].includes(data.type)) {
@@ -4794,7 +4928,7 @@ G.Factory = (function () {
     if (data.type === '운치') { storeUnchi(data.amount || 1); return true; }
     if (data.type === '조미료') { S.seasoning = (S.seasoning || 0) + (data.amount || 1); return true; }
     if (!S.warehouse[data.type]) S.warehouse[data.type] = [];
-    S.warehouse[data.type].push(data);
+    whAddData(S.warehouse[data.type], data, Math.max(1, Math.floor(data.amount || 1)));
     return true;
   }
   /* ---- 시장 포화: 같은 제품을 많이 팔면 단가가 떨어지고, 시간이 지나면 회복 ---- */
@@ -4830,8 +4964,14 @@ G.Factory = (function () {
   function sellAllWarehouse() {
     let gained = 0, count = 0;
     for (const type of Object.keys(S.warehouse)) {
-      const list = S.warehouse[type];
-      for (const d of list) { const p = marketSell(type, G.Creatures.cargoPrice(d)); gained += p; count++; recordSale(type, p); }
+      const list = S.warehouse[type]; if (!list) continue;
+      let typeGained = 0, typeCount = 0;
+      for (const d of list) {
+        const units = whUnitsOf(d);
+        for (let i = 0; i < units; i++) { typeGained += marketSell(type, G.Creatures.cargoPrice(d)); typeCount++; }
+      }
+      if (typeCount) recordSale(type, typeGained, typeCount);
+      gained += typeGained; count += typeCount;
       S.warehouse[type] = [];
     }
     const jissoCount = Math.floor(S.jissoFood || 0);
@@ -4850,9 +4990,17 @@ G.Factory = (function () {
   }
   // 종류별 n개 판매 (n=Infinity → 전부)
   function sellSomeType(type, n) {
-    const list = S.warehouse[type]; if (!list || !list.length) return { gained: 0, count: 0 };
-    const k = Math.min(n, list.length); let gained = 0, count = 0;
-    for (let i = 0; i < k; i++) { const d = list.shift(); const p = marketSell(type, G.Creatures.cargoPrice(d)); gained += p; count++; recordSale(type, p); }
+    const list = S.warehouse[type]; const total = whUnits(list);
+    if (!total) return { gained: 0, count: 0 };
+    let need = Math.min(n, total), gained = 0, count = 0;
+    for (const d of list) {
+      if (need <= 0) break;
+      const have = whUnitsOf(d), take = Math.min(have, need);
+      for (let i = 0; i < take; i++) gained += marketSell(type, G.Creatures.cargoPrice(d));
+      d.amount = have - take; need -= take; count += take;
+    }
+    for (let i = list.length - 1; i >= 0; i--) if (whUnitsOf(list[i]) <= 0) list.splice(i, 1);
+    if (count) recordSale(type, gained, count);
     S.money += gained; S.soldValue += gained; if (count) G.Assets.playSfx('sell');
     return { gained, count };
   }
@@ -4967,7 +5115,7 @@ G.Factory = (function () {
     if (!cg || cg._dead || !cg.data || !cg.data.type) return false;
     if (G.CREATURES[cg.data.type]) return false;
     const c = Math.floor(cg.gx), r = Math.floor(cg.gy);
-    if (!inGrid(c, r) || isBeltLike(c, r) || deviceAt(c, r)) return false;
+    if (!inGrid(c, r) || isBeltLike(c, r)) return false;
     return true;
   }
   function compactFloorCargoStacks() {
@@ -5047,14 +5195,7 @@ G.Factory = (function () {
     if (d.type === 'terrarium') return ['성체실장', '사육실장', '독라'].includes(data.type) ? 'terrarium' : false;
     if (d.type === 'mortar') return data.type === '구더기 탄도미사일' && (d.missileAmmo || 0) < 5 ? 'mortarAmmo' : false;
     if (d.type === 'mixer') {
-      if (data.type === '분쇄육' && !d.slotMeat) return 'mixMeat';
-      if (data.type === '운치' && (d.unchiN || 0) < C.MIX_UNCHI) return 'mixUnchi';
-      if (data.type === '짓소산' && !d.slotAcid) return 'mixAcid';
-      if (data.type === '조미료' && !d.slotSeasoning) return 'mixSeasoning';
-      if (data.type === '철조각' && !d.slotScrap) return 'mixScrap';
-      if (data.type === '농축운치' && (d.cA || 0) < (C.MIX_CONCENTRATE || 5)) return 'mixCA';
-      if (data.type === '고농축운치' && (d.cB || 0) < (C.MIX_CONCENTRATE || 5)) return 'mixCB';
-      if (data.type === '실장푸드' && (d.foodN || 0) < (C.MIX_FOOD_NEED || 50)) return 'mixFood';
+      if (accepts(def, data.type) && !G.CREATURES[data.type]) return deviceMaterialRoom(d, data) ? 'mixMat' : false;
       return false;
     }
     if (d.type === 'chaosgate') {
@@ -5073,10 +5214,10 @@ G.Factory = (function () {
       if (data.type === '성체실장' && (!d.chaosVictims || d.chaosVictims.length < 12)) return 'power';
       return ((C.CHAOS_FUEL_TIME && C.CHAOS_FUEL_TIME[data.type]) && !d.fuel && !d.fuelT) ? 'power' : false;
     }
-    if (d.type === 'packer') return (data.type === '철조각' || data.type === '분쇄육' || data.type === '실장육') ? 'pack' : false;
+    if (d.type === 'packer') return (accepts(def, data.type) && deviceMaterialRoom(d, data)) ? 'pack' : false;
     if (d.type === 'cookery') {
-      if (data.type === '조미료') return (d.seasoning || 0) + Math.max(1, data.amount || 1) <= (C.SEASONING_MAX || 200) ? 'cook' : false;
-      return accepts(def, data.type) ? 'cook' : false;
+      if (data.type === '조미료') return (d.seasoning || 0) + Math.max(1, data.amount || 1) <= materialCap() ? 'cook' : false;
+      return (accepts(def, data.type) && deviceMaterialRoom(d, data)) ? 'cook' : false;
     }
     if (d.type === 'acidgen') return (data.type === '성체실장' && !d.item && !d.output) ? 'acidgen' : false;
     if (d.type === 'correction') {
@@ -5100,7 +5241,7 @@ G.Factory = (function () {
   }
 
   /* ---- 시뮬레이션 ----------------------------------------------------- */
-  function update(dt) { rebuildFrameCaches(); tickEconomy(dt); tickWeather(dt); tickInvasion(dt); updateRenewableRuins(dt); updateCargo(dt); compactFloorCargoStacks(); rebuildCargoIndex(); rebuildCargoSpatial(); updateDevices(dt); updateResearch(dt); updateColonyUpgrade(dt); updateEnding(dt); updateWanderers(dt); updateMortarShells(dt); updateExplosionEffects(dt); updateParticles(dt); updateFloatTexts(dt); updateCoinEffects(dt); updateStains(dt); updateBgmMode(dt); tickQuests(dt); renderInventoryPanels(false); achievementStats().powerUsed += Math.max(0, S.powerUsed || 0) * dt; tickMonumentAchievements(); }
+  function update(dt) { refreshFrameCaches(dt); tickEconomy(dt); tickWeather(dt); tickInvasion(dt); updateRenewableRuins(dt); updateCargo(dt); compactFloorCargoStacks(); rebuildCargoIndex(); rebuildCargoSpatial(); updateDevices(dt); updateResearch(dt); updateColonyUpgrade(dt); updateEnding(dt); updateWanderers(dt); updateMortarShells(dt); updateExplosionEffects(dt); updateParticles(dt); updateFloatTexts(dt); updateCoinEffects(dt); updateStains(dt); updateBgmMode(dt); tickQuests(dt); renderInventoryPanels(false); achievementStats().powerUsed += Math.max(0, S.powerUsed || 0) * dt; tickMonumentAchievements(); }
   function tickWeather(dt) {
     if (!S.weather) S.weather = { rollIn: C.WEATHER_ROLL_SEC || 60, rainLeft: 0 };
     const w = S.weather;
@@ -5258,7 +5399,8 @@ G.Factory = (function () {
       return n;
     }
     const list = S.warehouse[item];
-    return list ? list.filter(d => statOK(d, sf)).length : 0;
+    if (!list) return 0;
+    let n = 0; for (const d of list) if (statOK(d, sf)) n += whUnitsOf(d); return n;
   }
   function consumeDeliverable(item, n, sf) {
     const counters = { 실장푸드: 'food', '짓소산 푸드': 'jissoFood', 우마이푸드: 'umaiFood', 다이어트푸드: 'dietFood', 운치: 'unchi', 조미료: 'seasoning' };
@@ -5272,7 +5414,11 @@ G.Factory = (function () {
       return;
     }
     const list = S.warehouse[item];
-    if (list) { let left = n; S.warehouse[item] = list.filter(d => { if (left > 0 && statOK(d, sf)) { left--; return false; } return true; }); }
+    if (list) {
+      let left = n;
+      for (const d of list) { if (left <= 0) break; if (!statOK(d, sf)) continue; const have = whUnitsOf(d); const take = Math.min(have, left); d.amount = have - take; left -= take; }
+      for (let i = list.length - 1; i >= 0; i--) if (whUnitsOf(list[i]) <= 0) list.splice(i, 1);
+    }
   }
   // 단체/티어에 맞는 퀘스트 1개 생성
   const QUEST_LOW_CREATURE_CAP = new Set(['자실장', '엄지', '구더기']);
@@ -5496,13 +5642,11 @@ G.Factory = (function () {
     if (rw.research) S.researchBonus = (S.researchBonus || 0) + Math.max(1, Math.round(rw.research * questMult));
     if (rw.scrap) {
       if (!S.warehouse['철조각']) S.warehouse['철조각'] = [];
-      const scrapN = Math.round(rw.scrap * questMult);
-      for (let i = 0; i < scrapN; i++) S.warehouse['철조각'].push(resourceCargoData('철조각'));
+      whAddData(S.warehouse['철조각'], resourceCargoData('철조각'), Math.round(rw.scrap * questMult));
     }
     if (rw.meatN) {
       if (!S.warehouse[rw.meatType]) S.warehouse[rw.meatType] = [];
-      const meatN = Math.round(rw.meatN * questMult);
-      for (let i = 0; i < meatN; i++) S.warehouse[rw.meatType].push(G.Creatures.makeProduct(rw.meatType, { stats: { 육질: 30, 개념: 0, 크기: 10 } }));
+      whAddData(S.warehouse[rw.meatType], G.Creatures.makeProduct(rw.meatType, { stats: { 육질: 30, 개념: 0, 크기: 10 } }), Math.round(rw.meatN * questMult));
     }
   }
   // 단체 무전: 치지직 효과 후 하단 대사창 출력
@@ -6583,11 +6727,24 @@ G.Factory = (function () {
       // 벨트가 아닌 장치 칸에 놓인 바닥 화물(예: 분쇄기 위의 실장육)은 그 장치에 투입 시도
       if (!isBeltLike(cell.c, cell.r)) {
         const devHere = deviceAt(cell.c, cell.r);
-        if (devHere && !(devHere.type === 'penbox' && SPECIAL_TREATS.has(cargo.data.type)) && dropInto(devHere, cargo.data, cell)) { cargo._dead = true; remove.push(cargo); continue; }
+        if (devHere && !(devHere.type === 'penbox' && SPECIAL_TREATS.has(cargo.data.type)) && dropInto(devHere, cargo.data, cell)) {
+          takeCargoUnit(cargo);
+          if (cargo._dead) remove.push(cargo);
+          continue;
+        }
       }
       if (cargo.sorterCell && (cargo.sorterCell.c !== cell.c || cargo.sorterCell.r !== cell.r)) { cargo.sorterCell = null; cargo.sorterDir = null; }
       const choice = chooseDir(cargo, cell.c, cell.r);
-      if (!choice) continue;
+      if (!choice) {
+        // 벨트·장치에 닿지 않는 바닥 화물(죽은 생물 산출물 등): 오래 방치되면 자연 소멸해 누적/렉을 막는다.
+        // 생물(배회 직전 개체)은 제외 — 별도 처리.
+        if (!G.CREATURES[cargo.data.type]) {
+          cargo.floorT = (cargo.floorT || 0) + dt;
+          if (cargo.floorT >= (C.FLOOR_CARGO_DECAY_SEC || 150)) { cargo._dead = true; remove.push(cargo); }
+        }
+        continue;
+      }
+      cargo.floorT = 0;   // 벨트에 올라탄 화물은 방치 타이머 초기화
       cargo.dir = choice.dir; cargo.axis = choice.axis;
       const v = DIR.vec[cargo.dir];
       const adv = beltSpeed() * dt;
@@ -6617,7 +6774,10 @@ G.Factory = (function () {
         if (kind && kind !== 'belt') {
           // 장치 칸으로 진입 → dropInto로 일괄 처리(가공/우리/창고/분류기/배합기/조리실/교정/터널 등)
           const d = deviceAt(nc.c, nc.r);
-          if (d && !(d.type === 'penbox' && SPECIAL_TREATS.has(cargo.data.type)) && dropInto(d, cargo.data, nc)) { cargo._dead = true; remove.push(cargo); }
+          if (d && !(d.type === 'penbox' && SPECIAL_TREATS.has(cargo.data.type)) && dropInto(d, cargo.data, nc)) {
+            takeCargoUnit(cargo);
+            if (cargo._dead) remove.push(cargo);
+          }
         }
         if (!cargo._dead) cargoIdxAdd(cargo);   // 셀을 넘어감 → 새 셀 버킷에 등록
       }
@@ -6753,7 +6913,7 @@ G.Factory = (function () {
         && Math.hypot(b.manualTarget.gx - cx, b.manualTarget.gy - cy) <= range) return true;
       return nearbyWanderers(cx, cy, range).some(w => !w._dead && turretTargets(b, w) && Math.hypot(w.gx - cx, w.gy - cy) <= range);
     }
-    if (b.type === 'packer') return outRoom(b) > 0 && !!((b.seafood && b.seafood.length || b.minced && b.minced.length || b.meat && b.meat.length) && (b.scrapN || 0) >= 1);
+    if (b.type === 'packer') return outRoom(b) > 0 && !!b.menu && packMenuReady(b, b.menu);
     if (b.type === 'salecenter') return (b.packT || 0) > 0;
     if (b.type === 'washbasin') return !!b.item && !b.output;
     if (b.type === 'slaughter' || b.type === 'grinder') return !!b.item && outRoom(b) > 0;
@@ -6958,9 +7118,11 @@ G.Factory = (function () {
   let powerGridUpdateT = 0;
   let frameGrabbersByPriority = [];
   let frameGrabberSourcePens = new Map();
+  let frameGrabberSourceKeys = new Map();
+  let frameGrabbersBySource = new Map();
   function updateDevices(dt) {
     updateConstruction(dt);
-    for (const b of S.buildings) if (POWER_PLANTS.has(b.type) && !isConstructing(b)) updatePowerPlant(b, dt);
+    for (const b of frameCache.powerPlants) if (!isConstructing(b)) updatePowerPlant(b, dt);
     powerGridUpdateT -= dt;
     if (powerGridUpdateT <= 0) {
       powerGridUpdateT = 0.125;
@@ -6969,11 +7131,13 @@ G.Factory = (function () {
     // 집게/긴팔집게는 우선순위(priority 1~5, 작을수록 먼저) 순서로 먼저 처리한다.
     // 같은 출처(창고/장치/바닥)에 여러 집게의 요청이 동시에 몰릴 때, 우선순위가
     // 1에 가까운 집게가 먼저 집도록 보장하기 위함.
-    const grabbersByPriority = S.buildings.filter(b => isGrabberType(b.type));
+    const grabbersByPriority = frameCache.grabbers.slice();
     for (const b of grabbersByPriority) b.priority = grabberPriority(b);   // 구버전/비정상 저장값도 1~5로 보정
     grabbersByPriority.sort((a, b) => a.priority - b.priority || String(a.id).localeCompare(String(b.id)));
     frameGrabbersByPriority = grabbersByPriority;
     frameGrabberSourcePens = new Map();
+    frameGrabberSourceKeys = new Map();
+    frameGrabbersBySource = new Map();
     for (const b of grabbersByPriority) {
       const pk = grabberRoles(b).pickup;
       const direct = deviceAt(pk.c, pk.r);
@@ -6981,6 +7145,10 @@ G.Factory = (function () {
         ? direct
         : frameCache.penCellMap.get(pk.c + '|' + pk.r);
       if (pen) frameGrabberSourcePens.set(b.id, pen);
+      const key = pen ? ('pen:' + pen.id) : ('cell:' + pk.c + '|' + pk.r);
+      frameGrabberSourceKeys.set(b.id, key);
+      if (!frameGrabbersBySource.has(key)) frameGrabbersBySource.set(key, []);
+      frameGrabbersBySource.get(key).push(b);
     }
     for (const b of grabbersByPriority) {
       if (isConstructing(b)) continue;
@@ -7012,6 +7180,8 @@ G.Factory = (function () {
     }
     frameGrabbersByPriority = [];
     frameGrabberSourcePens = new Map();
+    frameGrabberSourceKeys = new Map();
+    frameGrabbersBySource = new Map();
   }
   function deviceCanSleep(b) {
     if (b.type === 'birthing') return !b.worker && !b.output;
@@ -7019,11 +7189,9 @@ G.Factory = (function () {
     if (b.type === 'washbasin') return !b.item && !b.output;
     if (b.type === 'sorter') return !(b.buffer && b.buffer.length);
     if (b.type === 'tunnel' || b.type === 'crossbelt') return !(b.queue && b.queue.length);
-    if (b.type === 'mixer') return !b.slotMeat && !b.slotAcid && !b.slotSeasoning && !b.slotScrap
-      && !(b.unchiN || b.foodN || b.cA || b.cB) && !b.outputFood && !outBuffer(b).length;
-    if (b.type === 'cookery') return !b.cooking && !Object.values(b.mats || {}).some(Boolean) && !outBuffer(b).length;
-    if (b.type === 'packer') return !(b.minced && b.minced.length) && !(b.meat && b.meat.length)
-      && !(b.seafood && b.seafood.length) && !(b.scrapN || 0) && !b.outputCargo && !outBuffer(b).length;
+    if (b.type === 'mixer') return !hasAnyMat(b) && !b.outputFood && !outBuffer(b).length;
+    if (b.type === 'cookery') return !b.cooking && !hasAnyMat(b) && !outBuffer(b).length;
+    if (b.type === 'packer') return !hasAnyMat(b) && !b.outputCargo && !outBuffer(b).length;
     if (b.type === 'acidgen') return !b.item && !outBuffer(b).length;
     if (b.type === 'correction') return !(b.inmates && b.inmates.length);
     if (b.type === 'slaughter' || b.type === 'deshell') return !b.item && !outBuffer(b).length;
@@ -7863,8 +8031,9 @@ G.Factory = (function () {
   function largeWarehouseCanOutput(b) {
     const type = b.filter && b.filter[0];
     const inv = inventoryOf(b);
-    const data = type && inv[type] && inv[type][0];
-    if (!data) return false;
+    const head = type && inv[type] && inv[type][0];
+    if (!head) return false;
+    const data = Object.assign({}, head, { amount: 1 });
     for (const out of largeWarehouseOutputCells(b)) {
       if (!inGrid(out.c, out.r)) continue;
       const dev = deviceAt(out.c, out.r);
@@ -7882,16 +8051,17 @@ G.Factory = (function () {
     b.outputCd = 0.25;
     for (const out of largeWarehouseOutputCells(b)) {
       if (!inGrid(out.c, out.r)) continue;
-      const data = inv[type][0];
-      if (!data) break;
+      const head = inv[type][0];
+      if (!head) break;
+      const data = Object.assign({}, head, { amount: 1, id: G.uid() });  // 스택에서 1단위만 출력
       const dev = deviceAt(out.c, out.r);
       if (dev) {
         if (!warehouseOutputDeviceReady(dev, data, out)) continue;
-        if (dropInto(dev, data, out)) inv[type].shift();
+        if (dropInto(dev, data, out)) whDecOne(inv[type]);
         continue;
       }
       if (!isBeltLike(out.c, out.r) || countCargoInCell(out.c, out.r) >= C.BELT_CAP) continue;
-      inv[type].shift();
+      whDecOne(inv[type]);
       const cg = makeCargo(data, out.c, out.r);
       cg.dir = out.dir;
       cg.axis = (out.dir === 1 || out.dir === 3) ? 'h' : 'v';
@@ -8441,33 +8611,26 @@ G.Factory = (function () {
 
   // 배합기 메뉴별 재료 충족 여부
   function mixMenuReady(b, key) {
-    const need = C.MIX_FOOD_NEED || 50;
-    const conc = C.MIX_CONCENTRATE || 5;
-    switch (key) {
-      case '실장푸드':     return !!b.slotMeat && (b.unchiN || 0) >= C.MIX_UNCHI;
-      case '짓소산 푸드':  return !!b.slotAcid && (b.foodN || 0) >= need;
-      case '우마이푸드':   return !!b.slotSeasoning && (b.foodN || 0) >= need;
-      case '다이어트푸드': return !!b.slotScrap && (b.foodN || 0) >= need;
-      case '농축운치':     return (b.unchiN || 0) >= conc;
-      case '고농축운치':   return (b.cA || 0) >= conc;
-      case '초고농축운치': return (b.cB || 0) >= conc;
-      default: return false;
-    }
+    return recipeReady(b, G.DEVICES.mixer.mix[key]);
   }
   function updateMixer(b, dt) {
+    const def = G.DEVICES.mixer;
     if (b.outputFood) { if (bufferCargo(b, b.outputFood)) b.outputFood = null; else return; }
-    const conc = C.MIX_CONCENTRATE || 5;
+    if (!b.mats) b.mats = {};
     const key = b.menu;   // 조리실처럼 메뉴를 직접 선택해야 배합 시작
-    const hasMat = b.slotMeat || (b.unchiN || 0) || b.slotAcid || b.slotSeasoning || b.slotScrap || (b.cA || 0) || (b.cB || 0) || (b.foodN || 0);
-    if (!key || !(G.DEVICES.mixer.mix && G.DEVICES.mixer.mix[key]) || !mixMenuReady(b, key)) {
-      b.state = hasMat ? 'ready' : 'idle'; b.timer = 0; return;
+    const r = key && def.mix[key];
+    if (!r || !mixMenuReady(b, key)) {
+      b.state = hasAnyMat(b) ? 'ready' : 'idle'; b.timer = 0; return;
     }
     const concentration = key === '농축운치' || key === '고농축운치' || key === '초고농축운치';
     b.state = 'producing'; b.timer += dt;
     deviceIdleTalk(b, dt, G.LINES && G.LINES.mixer, '테치테치');   // 배합 중 간헐 대사(자실장 어미)
-    if (b.timer < G.DEVICES.mixer.time / (workerMult(b) * (concentration ? concentrationMult() : 1))) return;
+    if (b.timer < (r.time || def.time) / (workerMult(b) * (concentration ? concentrationMult() : 1))) return;
     if (outRoom(b) <= 0) return;
-    const out = key === '실장푸드' ? makeFoodCargo(b.slotMeat)
+    // 재료 소모(스탯 재료 평균값은 실장푸드 품질에 사용)
+    let stats = { 육질: 0, 개념: 0, 크기: 0 };
+    for (const ing of r.ing) { const s = consumeCookIng(b, ing); if (s) stats = s; }
+    const out = key === '실장푸드' ? makeFoodCargo({ stats })
       : key === '짓소산 푸드' ? makeJissoFoodCargo()
       : key === '우마이푸드' ? makeSpecialFoodCargo('우마이푸드')
       : key === '다이어트푸드' ? makeSpecialFoodCargo('다이어트푸드')
@@ -8477,13 +8640,6 @@ G.Factory = (function () {
         const chance = Math.min(1, ((S.upgrades && S.upgrades.초고농축가속) || 0) * 0.1);
         if (Math.random() < chance && outRoom(b) > 0) bufferCargo(b, makeResourceCargo(key));
       }
-      if (key === '실장푸드') { b.slotMeat = null; b.unchiN = 0; }
-      else if (key === '짓소산 푸드') { b.slotAcid = null; b.foodN = 0; }
-      else if (key === '우마이푸드') { b.slotSeasoning = null; b.foodN = 0; }
-      else if (key === '다이어트푸드') { b.slotScrap = null; b.foodN = 0; }
-      else if (key === '농축운치') { b.unchiN = (b.unchiN || 0) - conc; }
-      else if (key === '고농축운치') { b.cA = (b.cA || 0) - conc; }
-      else { b.cB = (b.cB || 0) - conc; }
       b.timer = 0; b.state = 'ready';
       playDeviceSfx('wash', b);
     }
@@ -8537,6 +8693,58 @@ G.Factory = (function () {
     }
   }
 
+  /* ---- 조리실/배합기/포장기 공용 재료 처리 -------------------------------
+   * 재료는 b.mats[type](개수) + b.matStats[type](단위별 스탯)로 보관한다.
+   * 종류별 최대 C.MATERIAL_CAP(100)개까지만 받고, 초과분은 통째로 거부(소진 시까지 대기). */
+  function materialCap() { return C.MATERIAL_CAP || 100; }
+  // data를 장치 재료로 비축. cap 초과면 받지 않고 false(소멸 X). 성공 시 true.
+  function addMaterial(b, data, cap) {
+    cap = cap || materialCap();
+    const type = data.type;
+    const units = Math.max(1, Math.floor(data.amount || 1));
+    if (!b.mats) b.mats = {};
+    if (!b.matStats) b.matStats = {};
+    const have = b.mats[type] || 0;
+    if (have + units > cap) return false;   // 100 초과 → 통째로 거부
+    if (!Array.isArray(b.matStats[type])) b.matStats[type] = [];
+    b.mats[type] = have + units;
+    const s = Object.assign({ 육질: 0, 개념: 0, 크기: 0 }, data.stats || {});
+    for (let i = 0; i < units; i++) b.matStats[type].push(s);
+    return true;
+  }
+  // cap 무시하고 비축(레거시 슬롯 → mats 마이그레이션 전용)
+  function addMaterialRaw(b, type, units, stats) {
+    units = Math.max(0, Math.floor(units || 0));
+    if (units <= 0) return;
+    if (!b.mats) b.mats = {};
+    if (!b.matStats) b.matStats = {};
+    if (!Array.isArray(b.matStats[type])) b.matStats[type] = [];
+    b.mats[type] = (b.mats[type] || 0) + units;
+    const s = Object.assign({ 육질: 0, 개념: 0, 크기: 0 }, stats || {});
+    for (let i = 0; i < units; i++) b.matStats[type].push(s);
+  }
+  function hasAnyMat(b) {
+    if ((b.seasoning || 0) > 0) return true;
+    if (b.mats) for (const k in b.mats) if (b.mats[k] > 0) return true;
+    return false;
+  }
+  // 장치 위 재료 요약 라벨(예: "분쇄육3 운치40 조40")
+  function matSummaryText(b) {
+    const parts = [];
+    if (b.mats) for (const k in b.mats) { if (b.mats[k] > 0) parts.push((FILTER_LABEL[k] || k).slice(0, 3) + (b.mats[k])); }
+    if ((b.seasoning || 0) > 0) parts.push('조미료' + Math.floor(b.seasoning));
+    return parts.length ? parts.slice(0, 4).join(' ') : '재료 없음';
+  }
+  // data를 받을 여유가 있는지(캡 초과 X) — 진입 판정용(비파괴)
+  function deviceMaterialRoom(d, data, cap) {
+    cap = cap || materialCap();
+    const units = Math.max(1, Math.floor(data.amount || 1));
+    return ((d.mats && d.mats[data.type]) || 0) + units <= cap;
+  }
+  // 레시피(ing/unlock) 충족 여부 — 조리실/배합기/포장기 공용
+  function recipeReady(b, r) {
+    return !!r && (!r.unlock || (S.upgrades && S.upgrades[r.unlock])) && r.ing.every(ing => cookIngAvail(b, ing));
+  }
   // 조리실: 재료 N개 + 조미료 1 → 요리. 재료 종류에 따라 출력 화물이 다름.
   function takeCookeryStats(b, mat, n) {
     if (!b.matStats) b.matStats = {};
@@ -8558,12 +8766,12 @@ G.Factory = (function () {
   // 재료 슬롯(ing)이 충족됐는지 — 조미료는 조리실별 내부 비축, 나머지는 b.mats 합계
   function cookIngAvail(b, ing) {
     if (ing.seasoning) return (b.seasoning || 0) >= ing.n;
-    let sum = 0; for (const t of ing.any) sum += (b.mats[t] || 0);
+    const mats = b.mats || {};
+    let sum = 0; for (const t of ing.any) sum += (mats[t] || 0);
     return sum >= ing.n;
   }
   function cookMenuReady(b, key) {
-    const r = G.DEVICES.cookery.cook[key];
-    return !!r && (!r.unlock || (S.upgrades && S.upgrades[r.unlock])) && r.ing.every(ing => cookIngAvail(b, ing));
+    return recipeReady(b, G.DEVICES.cookery.cook[key]);
   }
   // ing 소모 + (stat 재료면) 소모한 재료의 평균 스탯 반환
   function consumeCookIng(b, ing) {
@@ -8588,7 +8796,8 @@ G.Factory = (function () {
     b.cooking = key;
     const effects = environmentEffectsForBuilding(b);
     b.state = 'producing'; b.timer = (b.timer || 0) + dt * (effects.cookingSpeed || 1);
-    if (b.timer >= def.time / (workerMult(b) * massProcessingMult(b))) {
+    const r0 = def.cook[key];
+    if (b.timer >= (r0.time || def.time) / (workerMult(b) * massProcessingMult(b))) {
       if (outRoom(b) > 0) {
         const r = def.cook[key];
         let stats = { 육질: 0, 개념: 0, 크기: 0 };
@@ -8603,26 +8812,27 @@ G.Factory = (function () {
     }
   }
 
-  // 포장기(가공): 분쇄육1+철조각1→통조림1, 실장육1+철조각1→진공포장1
+  // 포장기(가공): 조리실처럼 메뉴(레시피)를 골라야 포장 시작. 통조림/진공포장/참치 통조림.
+  function packMenuReady(b, key) {
+    return recipeReady(b, G.DEVICES.packer.pack[key]);
+  }
   function updatePacker(b, dt) {
+    const def = G.DEVICES.packer;
     if (b.outputCargo) { if (bufferCargo(b, b.outputCargo)) b.outputCargo = null; else { b.state = 'ready'; return; } }
-    b.minced = b.minced || []; b.meat = b.meat || []; b.seafood = b.seafood || []; b.scrapN = b.scrapN || 0;
-    const recipeTuna = b.seafood.length >= 1 && b.scrapN >= 1;  // → 참치 통조림
-    const recipeCan = b.minced.length >= 1 && b.scrapN >= 1;    // → 통조림
-    const recipeVac = b.meat.length >= 1 && b.scrapN >= 1;      // → 진공포장
-    if ((recipeTuna || recipeCan || recipeVac) && outRoom(b) > 0) {
-      b.state = 'producing'; b.timer = (b.timer || 0) + dt;
-      if (b.timer >= (G.DEVICES.packer.time || 1.5)) {
-        let outType, mat;   // 우선순위: 참치 통조림 > 통조림 > 진공포장
-        if (recipeTuna) { mat = b.seafood.shift(); outType = '참치 통조림'; }
-        else if (recipeCan) { mat = b.minced.shift(); outType = '통조림'; }
-        else { mat = b.meat.shift(); outType = '진공포장'; }
-        b.scrapN -= 1;
-        const out = G.Creatures.makeProduct(outType, { stats: (mat && mat.stats) || { 육질: 0, 개념: 0, 크기: 0 } });
+    if (!b.mats) b.mats = {};
+    const key = b.menu;   // 메뉴를 직접 선택해야 포장 시작
+    const r = key && def.pack[key];
+    if (!r || !packMenuReady(b, key)) { b.state = hasAnyMat(b) ? 'ready' : 'idle'; b.timer = 0; return; }
+    b.state = 'producing'; b.timer = (b.timer || 0) + dt;
+    if (b.timer >= (r.time || def.time)) {
+      if (outRoom(b) > 0) {
+        let stats = { 육질: 0, 개념: 0, 크기: 0 };
+        for (const ing of r.ing) { const s = consumeCookIng(b, ing); if (s) stats = s; }
+        const out = G.Creatures.makeProduct(r.out, { stats });
         if (bufferCargo(b, out)) b.outputCargo = null; else b.outputCargo = out;
         b.timer = 0; b.state = 'ready'; playDeviceSfx('sell', b);
       }
-    } else { b.state = (b.minced.length || b.meat.length || b.seafood.length || b.scrapN) ? 'ready' : 'idle'; b.timer = 0; }
+    }
   }
   function updateSorter(b, dt) {
     if (!b.buffer || !b.buffer.length) return;
@@ -8741,23 +8951,66 @@ G.Factory = (function () {
     if (dev) return !!entryKind(drop.c, drop.r, { data });
     return isCellCargoEmpty(drop.c, drop.r);
   }
+  // 출처 화물을 배열로 만들지 않고 순회하며 pred가 처음 true가 되는 즉시 종료(핫패스).
+  // grabberPickupPool과 동일한 출처 해석을 공유하되 풀을 생성하지 않는다.
+  function grabberPickupAny(b, pred) {
+    const pk = grabberRoles(b).pickup;
+    const dev = deviceAt(pk.c, pk.r);
+    const sourcePen = frameGrabberSourcePens.get(b.id) || (dev && dev.type === 'penbox' ? dev : null);
+    const unchiBundle = C.UNCHI_BUNDLE || 10;
+    if (sourcePen) {
+      for (const c of (sourcePen.creatures || [])) if (pred(c)) return true;
+      if ((b.filter || []).includes('운치') && (sourcePen.unchi || 0) >= unchiBundle && pred({ type: '운치', amount: unchiBundle, stats: { 크기: 0 } })) return true;
+      return false;
+    }
+    if (dev && (dev.type === 'warehouse' || dev.type === 'largewarehouse' || dev.type === 'colony')) {
+      const inv = inventoryOf(dev);
+      for (const type of Object.keys(inv)) {
+        if (G.CREATURES[type]) continue;
+        const list = inv[type]; if (!list || !list.length) continue;
+        for (const d of list) if (pred(d)) return true;
+      }
+      if (!isLocalWarehouse(dev)) {
+        for (const [type, info] of Object.entries(GLOBAL_WAREHOUSE_RESOURCES)) {
+          const available = Math.floor(S[info.state] || 0);
+          if (available > 0 && pred({ type, amount: Math.min(info.bundle(), available), stats: { 크기: 0 } })) return true;
+        }
+      }
+      return false;
+    }
+    if (dev) {
+      if (dev.type === 'terrarium') {
+        for (const c of (dev.incubatorCreatures || [])) if (pred(c)) return true;
+        if ((b.filter || []).includes('운치') && (dev.incubatorUnchi || 0) >= unchiBundle && pred({ type: '운치', amount: unchiBundle, stats: { 크기: 0 } })) return true;
+        return false;
+      }
+      for (const d of (dev.outBuffer || [])) if (pred(d)) return true;
+      return false;
+    }
+    for (const cg of (cargoIdx.get(pk.c + '|' + pk.r) || [])) {
+      if (!cg._dead && Math.floor(cg.gx) === pk.c && Math.floor(cg.gy) === pk.r && pred(cg.data)) return true;
+    }
+    for (const w of nearbyWanderers(pk.c + 0.5, pk.r + 0.5, 1)) {
+      if (!w._dead && !w.data.labor && Math.floor(w.gx) === pk.c && Math.floor(w.gy) === pk.r && pred(w.data)) return true;
+    }
+    return false;
+  }
   function grabberHasPickupCandidate(b) {
     if (!b || b.holding || isConstructing(b)) return false;
-    const pool = grabberPickupPool(b);
-    return pool.some(data => matchItem(b, data, pool) && grabberCanRouteData(b, data));
+    const sf = b.statFilter;
+    // 랭크형 스탯 필터(예: 육질 최대)는 전체 풀이 있어야 순위를 매길 수 있다.
+    if (sf && sf.stat && rankedStatOp(sf.op)) {
+      const pool = grabberPickupPool(b);
+      return pool.some(data => matchItem(b, data, pool) && grabberCanRouteData(b, data));
+    }
+    // 비랭크: 풀을 만들지 않고 첫 매칭에서 즉시 종료
+    return grabberPickupAny(b, data => matchItem(b, data, null) && grabberCanRouteData(b, data));
   }
   function higherPriorityGrabberClaimsPickup(b) {
     const priority = grabberPriority(b);
-    const pickup = grabberRoles(b).pickup;
-    const sourcePen = frameGrabberSourcePens.get(b.id);
-    for (const other of frameGrabbersByPriority) {
+    const group = frameGrabbersBySource.get(frameGrabberSourceKeys.get(b.id)) || [];
+    for (const other of group) {
       if (other === b || grabberPriority(other) >= priority) continue;
-      if (sourcePen) {
-        if (frameGrabberSourcePens.get(other.id) !== sourcePen) continue;
-      } else {
-        const op = grabberRoles(other).pickup;
-        if (op.c !== pickup.c || op.r !== pickup.r) continue;
-      }
       // 높은 순위 집게가 비어 있고 지금 집어갈 수 있을 때만 하위 순위를 대기시킨다.
       // 이미 화물을 운송 중인 집게는 점유자로 보지 않아 여러 집게가 병렬로 움직인다.
       if (grabberHasPickupCandidate(other)) return true;
@@ -9643,7 +9896,8 @@ G.Factory = (function () {
 
     // 집게 바닥(레일)은 바닥 타일 바로 위, 그 외 모든 그래픽보다 아래에 깔림
     const visBase = (b) => !(b.col > vx1 || b.col + b.w < vx0 || b.row > vy1 || b.row + b.h < vy0);
-    for (const b of S.buildings) if (isGrabberType(b.type) && visBase(b)) drawWithConstruction(b, drawGrabberBase);
+    const visibleBuildings = S.buildings.filter(visBase);
+    for (const b of visibleBuildings) if (isGrabberType(b.type)) drawWithConstruction(b, drawGrabberBase);
 
     ctx.strokeStyle = 'rgba(255,255,255,0.06)'; ctx.lineWidth = 1 / cam.zoom;
     for (let c = c0; c <= c1; c++) { ctx.beginPath(); ctx.moveTo(c * CELL, r0 * CELL); ctx.lineTo(c * CELL, r1 * CELL); ctx.stroke(); }
@@ -9654,24 +9908,23 @@ G.Factory = (function () {
     drawPowerSupplyOverlays();
     drawPowerLinkLines();
 
-    const vis = (b) => !(b.col > vx1 || b.col + b.w < vx0 || b.row > vy1 || b.row + b.h < vy0);
     drawStains();
-    for (const b of S.buildings) if ((b.type === 'belt' || b.type === 'guardbelt') && vis(b)) drawWithConstruction(b, drawBelt);
-    for (const b of S.buildings) if (b.type !== 'belt' && b.type !== 'guardbelt' && !isGrabberType(b.type) && vis(b)) drawWithConstruction(b, drawDevice);
+    for (const b of visibleBuildings) if (b.type === 'belt' || b.type === 'guardbelt') drawWithConstruction(b, drawBelt);
+    for (const b of visibleBuildings) if (b.type !== 'belt' && b.type !== 'guardbelt' && !isGrabberType(b.type)) drawWithConstruction(b, drawDevice);
     // 바닥 위 개체(화물+배회): y 큰(아래) 쪽을 나중에 그림(입체감)
     const floor = [];
     for (const cg of S.cargo) if (cg.gx > vx0 - 1 && cg.gx < vx1 + 1 && cg.gy > vy0 - 1 && cg.gy < vy1 + 1) floor.push({ y: cg.gy, d: drawCargo, a: cg });
     for (const w of S.wanderers) if (w.gx > vx0 - 1 && w.gx < vx1 + 1 && w.gy > vy0 - 1 && w.gy < vy1 + 1) floor.push({ y: w.gy, d: drawWanderer, a: w });
     floor.sort((p, q) => p.y - q.y);
     for (const f of floor) f.d(f.a);
-    for (const b of S.buildings) if (b.type === 'penbox' && vis(b)) drawWithConstruction(b, drawPenForeground);
+    for (const b of visibleBuildings) if (b.type === 'penbox') drawWithConstruction(b, drawPenForeground);
     drawMortarShells();
     drawExplosionEffects();
     drawParticles();
     drawFloatTexts();
     drawWalls();
     drawDoors();
-    for (const b of S.buildings) if (isGrabberType(b.type) && vis(b)) drawWithConstruction(b, drawGrabber);
+    for (const b of visibleBuildings) if (isGrabberType(b.type)) drawWithConstruction(b, drawGrabber);
     drawSelection();
     drawGhost();
     drawMoveGhost();
@@ -10008,28 +10261,32 @@ G.Factory = (function () {
       ctx.fillText('무게 ' + Math.floor(b.weight || 0), x + w / 2, y + h - 14);
       drawBufferLabel(b, x, y, w, h);
     } else if (b.type === 'mixer') {
-      const need = C.MIX_FOOD_NEED || 50;
-      const ready = b.menu && mixMenuReady(b, b.menu);
-      drawProgressBar(x, y + h - 6, w, ready ? b.timer / (def.time / workerMult(b)) : 0, b.state);
-      const menuName = (b.menu && def.mix && def.mix[b.menu]) ? def.mix[b.menu].out : '메뉴 미선택';
+      const mr = b.menu && def.mix && def.mix[b.menu];
+      const ready = mr && mixMenuReady(b, b.menu);
+      drawProgressBar(x, y + h - 6, w, ready ? b.timer / ((mr.time || def.time) / workerMult(b)) : 0, b.state);
+      const menuName = mr ? mr.out : '메뉴 미선택';
       ctx.fillStyle = b.menu ? '#ffe9b0' : '#ff9a8a'; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
-      ctx.fillText(menuName, x + w / 2, y + h / 2 - 10);
+      ctx.fillText(menuName, x + w / 2, y + h / 2 - 8);
       ctx.fillStyle = 'rgba(255,255,255,0.9)'; ctx.font = '8px sans-serif';
-      ctx.fillText('분쇄육' + (b.slotMeat ? '✓' : '·') + ' 운치' + (b.unchiN || 0) + '/' + C.MIX_UNCHI, x + w / 2, y + h / 2 + 1);
-      ctx.fillText('짓소산' + (b.slotAcid ? '✓' : '·') + ' 푸드' + (b.foodN || 0) + '/' + need + ' 조' + (b.slotSeasoning ? '✓' : '·') + ' 철' + (b.slotScrap ? '✓' : '·'), x + w / 2, y + h / 2 + 11);
+      ctx.fillText(matSummaryText(b), x + w / 2, y + h / 2 + 4);
       drawWorkerSlots(b, x, y, w);
       drawBufferLabel(b, x, y, w, h);
     } else if (b.type === 'packer') {
-      drawProgressBar(x, y + h - 6, w, b.state === 'producing' ? (b.timer || 0) / (def.time || 1.5) : 0, b.state);
-      ctx.fillStyle = 'rgba(255,255,255,0.92)'; ctx.font = '9px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
-      ctx.fillText('철' + (b.scrapN || 0) + ' 분' + ((b.minced && b.minced.length) || 0) + ' 육' + ((b.meat && b.meat.length) || 0), x + w / 2, y + h / 2);
+      const pr = b.menu && def.pack && def.pack[b.menu];
+      const pready = pr && packMenuReady(b, b.menu);
+      drawProgressBar(x, y + h - 6, w, pready ? (b.timer || 0) / (pr.time || def.time) : 0, b.state);
+      ctx.fillStyle = b.menu ? '#ffe9b0' : '#ff9a8a'; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+      ctx.fillText(pr ? pr.out : '메뉴 미선택', x + w / 2, y + h / 2 - 8);
+      ctx.fillStyle = 'rgba(255,255,255,0.9)'; ctx.font = '8px sans-serif';
+      ctx.fillText(matSummaryText(b), x + w / 2, y + h / 2 + 4);
       drawBufferLabel(b, x, y, w, h);
     } else if (b.type === 'salecenter') {
       ctx.fillStyle = 'rgba(255,255,255,0.6)'; ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText('💰 물류센터', x + w / 2, y + h / 2);
       if (b.up) { ctx.font = '10px sans-serif'; ctx.fillText('+' + (b.up * 10) + '%', x + w / 2, y + h / 2 + 14); }
     } else if (b.type === 'cookery') {
-      drawProgressBar(x, y + h - 6, w, b.cooking ? b.timer / (def.time / workerMult(b)) : 0, b.state);
+      const cr = b.cooking && def.cook && def.cook[b.cooking];
+      drawProgressBar(x, y + h - 6, w, cr ? b.timer / ((cr.time || def.time) / workerMult(b)) : 0, b.state);
       ctx.fillStyle = 'rgba(255,255,255,0.92)'; ctx.font = '9px sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
       // 비축된 재료 종류 표시
       let li = 0;
@@ -10161,11 +10418,11 @@ G.Factory = (function () {
   function isDeviceAnimating(b) {
     if (b.state === 'producing') return true;
     if (b.type === 'salecenter') return (b.packT || 0) > 0;
-    if (b.type === 'packer') return !!((b.minced && b.minced.length || b.meat && b.meat.length) && (b.scrapN || 0) >= 1);
+    if (b.type === 'packer') return !!b.menu && packMenuReady(b, b.menu);
     if (b.type === 'reformer') return !!b.item;
     if (b.type === 'washbasin') return !!b.item;
     if (b.type === 'grinder') return !!b.item;
-    if (b.type === 'mixer') return !!((b.slotMeat && (b.unchiN || 0) >= C.MIX_UNCHI) || (b.slotAcid && (b.foodN || 0) >= (C.MIX_FOOD_NEED || 50)));
+    if (b.type === 'mixer') return !!b.menu && mixMenuReady(b, b.menu);
     if (b.type === 'cookery') return !!b.cooking;
     if (b.type === 'acidgen') return !!b.item;
     if (b.type === 'feeder') return !b.noFeed;
