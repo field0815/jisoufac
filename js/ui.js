@@ -1508,7 +1508,7 @@ G.UI = (function () {
     return best;
   }
   // 창고 스택 유틸(factory.js와 동일 규칙: amount 합산)
-  function whUnitsOf(d) { return Math.max(1, Math.floor((d && d.amount) || 1)); }
+  function whUnitsOf(d) { if (!d) return 0; if (d.amount == null) return 1; return Math.max(0, Math.floor(d.amount)); }
   function whListUnits(list) { if (!Array.isArray(list)) return 0; let n = 0; for (const d of list) n += whUnitsOf(d); return n; }
   function warehouseCount(type) {
     if (type === '운치') return Math.floor(S.unchi || 0);
@@ -2118,9 +2118,11 @@ G.UI = (function () {
     return Object.keys(costs || {}).every(type => materialCount(type) >= costs[type]);
   }
   function materialCount(type) {
-    return whListUnits(S.warehouse && S.warehouse[type]);
+    // 독라: 콜로니+모든 독립 창고 합산 (G.Factory.warehouseCount가 처리)
+    return (G.Factory && G.Factory.warehouseCount) ? G.Factory.warehouseCount(type) : whListUnits(S.warehouse && S.warehouse[type]);
   }
   function takeMaterial(type, count) {
+    if (G.Factory && G.Factory.takeWarehouse) return G.Factory.takeWarehouse(type, count);
     const list = S.warehouse && S.warehouse[type];
     if (whListUnits(list) < count) return false;
     let need = count;
@@ -2299,24 +2301,27 @@ G.UI = (function () {
     const jissoHave = Math.floor(S.jissoFood || 0);
     const jissoUnit = C.JISSO_FOOD_PRICE || 5;
     let total = jissoHave * jissoUnit;
-    const whKeys = Object.keys(S.warehouse).filter(k => whListUnits(S.warehouse[k]) > 0);
+    // 판매 가능한 모든 재고(독라: 콜로니 공유창고 + 모든 독립 창고 합산)
+    const whUnitsOfType = (k) => (G.Factory && G.Factory.sellableUnits) ? G.Factory.sellableUnits(k) : whListUnits(S.warehouse[k]);
+    const whStacksOf = (k) => (G.Factory && G.Factory.sellableStacks) ? G.Factory.sellableStacks(k) : (S.warehouse[k] || []);
+    const whKeys = ((G.Factory && G.Factory.sellableTypes) ? G.Factory.sellableTypes() : Object.keys(S.warehouse))
+      .filter(k => whUnitsOfType(k) > 0).sort((a, b) => a.localeCompare(b, 'ko'));
     const unitOf = (k) => {
-      const list = S.warehouse[k];
       let sum = 0, units = 0;
-      for (const d of list) { const u = whUnitsOf(d); sum += G.Creatures.cargoPrice(d) * u; units += u; }
+      for (const d of whStacksOf(k)) { const u = whUnitsOf(d); sum += G.Creatures.cargoPrice(d) * u; units += u; }
       const base = units ? sum / units : 0;
       return Math.max(1, Math.round(base * mMult(k)));
     };
-    whKeys.forEach(k => { total += unitOf(k) * whListUnits(S.warehouse[k]); });
+    whKeys.forEach(k => { total += unitOf(k) * whUnitsOfType(k); });
     document.getElementById('wh-value').textContent = total.toLocaleString();
-    const whSig = '짓소산 푸드:' + jissoHave + '|' + whKeys.map(k => k + ':' + whListUnits(S.warehouse[k]) + ':' + mPct(k)).join('|');
+    const whSig = '짓소산 푸드:' + jissoHave + '|' + whKeys.map(k => k + ':' + whUnitsOfType(k) + ':' + mPct(k)).join('|');
     if (whSig !== lastWhSig) {
       lastWhSig = whSig;
       const jissoHtml = jissoHave > 0
         ? sellCardHtml(productIcon('짓소산 푸드', 'wh-icon'), '짓소산 푸드', jissoHave, jissoHave * jissoUnit, jissoUnit, '', sellButtonsHtml('jfsell'))
         : '';
       const whHtml = jissoHtml + whKeys.map(k => {
-        const units = whListUnits(S.warehouse[k]);
+        const units = whUnitsOfType(k);
         const unit = unitOf(k);
         const val = unit * units;
         const pct = mPct(k);
@@ -2407,7 +2412,9 @@ G.UI = (function () {
     add('다이어트푸드', S.dietFood);
     add('운치', S.unchi);
     add('조미료', S.seasoning);
-    Object.keys(S.warehouse || {}).forEach(k => add(k, whListUnits(S.warehouse[k])));
+    // 독라: 콜로니+모든 독립 창고 합산
+    if (G.Factory && G.Factory.sellableTypes) G.Factory.sellableTypes().forEach(k => add(k, G.Factory.sellableUnits(k)));
+    else Object.keys(S.warehouse || {}).forEach(k => add(k, whListUnits(S.warehouse[k])));
     return counts;
   }
   function renderInventoryStats() {

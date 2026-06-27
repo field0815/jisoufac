@@ -1544,7 +1544,11 @@ G.Factory = (function () {
    * 창고 재고는 [{type, amount, stats, price, isProduct, ...}] 배열이며,
    * 같은 종류·스탯·가격 아이템은 amount로 합쳐 보관한다(메모리/세이브 절약).
    * 수량은 항상 amount의 합으로 센다(.length 아님). */
-  function whUnitsOf(d) { return Math.max(1, Math.floor((d && d.amount) || 1)); }
+  function whUnitsOf(d) {
+    if (!d) return 0;
+    if (d.amount == null) return 1;                 // 레거시 스택(amount 없음) = 1단위
+    return Math.max(0, Math.floor(d.amount));        // 0으로 비운 스택은 0 → 정리 대상
+  }
   function whUnits(list) {
     if (!Array.isArray(list)) return 0;
     let n = 0; for (const d of list) n += whUnitsOf(d); return n;
@@ -1645,13 +1649,17 @@ G.Factory = (function () {
       }
     }
   }
+  // 재고 수량(건설·연구 재료 등). 독라: 콜로니+모든 독립 창고 합산.
   function warehouseCount(type) {
-    return whUnits(S.warehouse[type]);
+    return sellableUnits(type);
   }
+  // 재고 n단위 소비. 독라: 콜로니부터 모든 독립 창고 순으로 차감.
   function takeWarehouse(type, n) {
-    const list = S.warehouse[type];
-    if (whUnits(list) < n) return false;
-    whTakeUnits(list, n);
+    const lists = sellLists(type);
+    let total = 0; for (const l of lists) total += whUnits(l);
+    if (total < n) return false;
+    let need = n;
+    for (const list of lists) { if (need <= 0) break; need -= whTakeUnits(list, need).length; }
     return true;
   }
   function isLocalWarehouse(b) {
@@ -4961,18 +4969,45 @@ G.Factory = (function () {
     S.soldValueByType[type] = (S.soldValueByType[type] || 0) + (price || 0);
     S.produceLog.push(performance.now());
   }
+  // 거래(판매) 대상 재고 리스트 모음. 독라: 콜로니 공유창고 + 모든 독립 창고 b.inventory.
+  // 일반 난이도: 콜로니 공유창고(S.warehouse) 하나뿐.
+  function sellLists(type) {
+    const out = [];
+    const colony = S.warehouse[type];
+    if (colony && colony.length) out.push(colony);
+    if (S.difficulty === 'dokura') {
+      for (const b of S.buildings) {
+        if (isLocalWarehouse(b) && b.inventory && b.inventory[type] && b.inventory[type].length) out.push(b.inventory[type]);
+      }
+    }
+    return out;
+  }
+  // 판매 가능한 모든 재고 종류(독라: 독립 창고 포함)
+  function sellableTypes() {
+    const set = new Set();
+    for (const t in S.warehouse) if (whUnits(S.warehouse[t]) > 0) set.add(t);
+    if (S.difficulty === 'dokura') {
+      for (const b of S.buildings) {
+        if (isLocalWarehouse(b) && b.inventory) {
+          for (const t in b.inventory) if (whUnits(b.inventory[t]) > 0) set.add(t);
+        }
+      }
+    }
+    return Array.from(set);
+  }
+  // 종류별 총 판매가능 수량(모든 창고 합산)
+  function sellableUnits(type) {
+    let n = 0; for (const list of sellLists(type)) n += whUnits(list); return n;
+  }
+  // 가격 계산용 — 종류별 모든 재고 스택을 한 배열로(읽기 전용)
+  function sellableStacks(type) {
+    const out = []; for (const list of sellLists(type)) for (const d of list) out.push(d); return out;
+  }
   function sellAllWarehouse() {
     let gained = 0, count = 0;
-    for (const type of Object.keys(S.warehouse)) {
-      const list = S.warehouse[type]; if (!list) continue;
-      let typeGained = 0, typeCount = 0;
-      for (const d of list) {
-        const units = whUnitsOf(d);
-        for (let i = 0; i < units; i++) { typeGained += marketSell(type, G.Creatures.cargoPrice(d)); typeCount++; }
-      }
-      if (typeCount) recordSale(type, typeGained, typeCount);
-      gained += typeGained; count += typeCount;
-      S.warehouse[type] = [];
+    for (const type of sellableTypes()) {
+      const r = sellSomeType(type, Infinity);
+      gained += r.gained; count += r.count;
     }
     const jissoCount = Math.floor(S.jissoFood || 0);
     if (jissoCount > 0) {
@@ -4980,26 +5015,30 @@ G.Factory = (function () {
       const unit = C.JISSO_FOOD_PRICE || 5;
       for (let i = 0; i < jissoCount; i++) jissoGained += marketSell('짓소산 푸드', unit);
       S.jissoFood -= jissoCount;
+      S.money += jissoGained; S.soldValue += jissoGained;
       gained += jissoGained;
       count += jissoCount;
       recordSale('짓소산 푸드', jissoGained, jissoCount);
     }
-    S.money += gained; S.soldValue += gained;
     if (count) G.Assets.playSfx('sell');
     return { gained, count };
   }
-  // 종류별 n개 판매 (n=Infinity → 전부)
+  // 종류별 n개 판매 (n=Infinity → 전부). 독라에서는 콜로니+모든 독립 창고에서 차감.
   function sellSomeType(type, n) {
-    const list = S.warehouse[type]; const total = whUnits(list);
+    const lists = sellLists(type);
+    const total = lists.reduce((s, l) => s + whUnits(l), 0);
     if (!total) return { gained: 0, count: 0 };
     let need = Math.min(n, total), gained = 0, count = 0;
-    for (const d of list) {
+    for (const list of lists) {
       if (need <= 0) break;
-      const have = whUnitsOf(d), take = Math.min(have, need);
-      for (let i = 0; i < take; i++) gained += marketSell(type, G.Creatures.cargoPrice(d));
-      d.amount = have - take; need -= take; count += take;
+      for (const d of list) {
+        if (need <= 0) break;
+        const have = whUnitsOf(d), take = Math.min(have, need);
+        for (let i = 0; i < take; i++) gained += marketSell(type, G.Creatures.cargoPrice(d));
+        d.amount = have - take; need -= take; count += take;
+      }
+      for (let i = list.length - 1; i >= 0; i--) if (whUnitsOf(list[i]) <= 0) list.splice(i, 1);
     }
-    for (let i = list.length - 1; i >= 0; i--) if (whUnitsOf(list[i]) <= 0) list.splice(i, 1);
     if (count) recordSale(type, gained, count);
     S.money += gained; S.soldValue += gained; if (count) G.Assets.playSfx('sell');
     return { gained, count };
@@ -11694,5 +11733,5 @@ G.Factory = (function () {
   }
 
   function laborStatus() { return { count: S.wanderers.filter(w => w.data && w.data.labor).length, limit: laborLimit() }; }
-  return { init, update, updateCamera: updateCameraKeys, penVisualActive, render, reloadState, playOpeningIntro, screenToCell, tryLoadCreature, hoverDropTarget, clearDropHover, sellAllWarehouse, sellSomeType, sellPenCreatures, sellJissoFood, spawnWanderer, dropToFactory, dropFloorCargo, burstAt, stainAt, floatText, playSfxAt: playWorldSfx, triggerRaidCountdown, clearInvaders, endingCheat, chooseEnding, endingCinematicShot, endingCountdownFinale, endingCinematicTick, endingLaunchStart, endingLaunchFrame, finishStayEnding, researchPower, warehouseCount, playerInventoryCapacity, playerInventoryCount, playerInventoryRoom, laborStatus, powerUsageBreakdown, feedZoneMult, feedZoneInfo, pushOutOfFeeders, exportRuntimeState, importRuntimeState, refreshMenu, hotkeyBindings, hotkeyToolOptions, setBuildHotkey, questsForUI, acceptQuest, completeQuest, deliverQuest, questHasAny, marketMult, marketPct, forceTutorialGrowth, focusCameraOnGrid, tutorialGrowthLineConnected, landEnvironment, environmentAtPoint, environmentForBuilding, environmentEffectsForBuilding, hasOwnedEnvironment, recordUnchiProduced: n => { achievementStats().unchi += Math.max(0, n || 0); } };
+  return { init, update, updateCamera: updateCameraKeys, penVisualActive, render, reloadState, playOpeningIntro, screenToCell, tryLoadCreature, hoverDropTarget, clearDropHover, sellAllWarehouse, sellSomeType, sellPenCreatures, sellJissoFood, spawnWanderer, dropToFactory, dropFloorCargo, burstAt, stainAt, floatText, playSfxAt: playWorldSfx, triggerRaidCountdown, clearInvaders, sellableTypes, sellableUnits, sellableStacks, takeWarehouse, endingCheat, chooseEnding, endingCinematicShot, endingCountdownFinale, endingCinematicTick, endingLaunchStart, endingLaunchFrame, finishStayEnding, researchPower, warehouseCount, playerInventoryCapacity, playerInventoryCount, playerInventoryRoom, laborStatus, powerUsageBreakdown, feedZoneMult, feedZoneInfo, pushOutOfFeeders, exportRuntimeState, importRuntimeState, refreshMenu, hotkeyBindings, hotkeyToolOptions, setBuildHotkey, questsForUI, acceptQuest, completeQuest, deliverQuest, questHasAny, marketMult, marketPct, forceTutorialGrowth, focusCameraOnGrid, tutorialGrowthLineConnected, landEnvironment, environmentAtPoint, environmentForBuilding, environmentEffectsForBuilding, hasOwnedEnvironment, recordUnchiProduced: n => { achievementStats().unchi += Math.max(0, n || 0); } };
 })();
